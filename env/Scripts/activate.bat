@@ -8,7 +8,7 @@ if defined _OLD_CODEPAGE (
     "%SystemRoot%\System32\chcp.com" 65001 > nul
 )
 
-set VIRTUAL_ENV=C:\TARUMT\chatbot-tarumt\env
+set VIRTUAL_ENV=C:\Users\Besma\Desktop\ING2S2\chatbot-tarumt\env
 
 if not defined PROMPT set PROMPT=$P$G
 
