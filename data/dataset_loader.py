@@ -1,70 +1,43 @@
 import os
-import pandas as pd
 import kagglehub
+import pandas as pd
 
 
-class SuperstoreDataLoader:
-    """
-    Class responsible for downloading and loading
-    the Global Superstore dataset.
-    """
-
-    def __init__(self, dataset_name: str, file_name: str):
+class DatasetLoader:
+    def __init__(
+        self,
+        dataset_name="fatihilhan/global-superstore-dataset",
+        file_name="superstore.csv",
+        encoding="latin1"
+    ):
         self.dataset_name = dataset_name
         self.file_name = file_name
+        self.encoding = encoding
         self.dataset_path = None
         self.csv_path = None
-        self.dataframe = None
 
     def download_dataset(self):
-        """
-        Download the dataset from Kaggle.
-        """
         self.dataset_path = kagglehub.dataset_download(self.dataset_name)
+
         print("Path to dataset files:", self.dataset_path)
-        return self.dataset_path
+        print("Available files:", os.listdir(self.dataset_path))
 
-    def show_available_files(self):
-        """
-        Display the available files in the downloaded dataset folder.
-        """
+        return self
+
+    def find_csv_file(self):
         if self.dataset_path is None:
-            raise ValueError("The dataset must be downloaded before displaying files.")
-
-        files = os.listdir(self.dataset_path)
-        print("Available files:", files)
-        return files
-
-    def load_csv(self):
-        """
-        Load the CSV file into a pandas DataFrame.
-        """
-        if self.dataset_path is None:
-            self.download_dataset()
+            raise ValueError("Dataset must be downloaded first.")
 
         self.csv_path = os.path.join(self.dataset_path, self.file_name)
 
         if not os.path.exists(self.csv_path):
-            raise FileNotFoundError(
-                f"The file '{self.file_name}' was not found. "
-                f"Check the exact file name using show_available_files()."
-            )
+            raise FileNotFoundError(f"File not found: {self.csv_path}")
 
-        self.dataframe = pd.read_csv(self.csv_path, encoding="latin1")
-        return self.dataframe
+        return self
 
-    def show_overview(self):
-        """
-        Display a quick overview of the dataset.
-        """
-        if self.dataframe is None:
-            raise ValueError("The data must be loaded before displaying an overview.")
+    def load_csv(self):
+        self.download_dataset()
+        self.find_csv_file()
 
-        print("\n===== DATA PREVIEW =====")
-        print(self.dataframe.head())
-
-        print("\n===== COLUMNS =====")
-        print(self.dataframe.columns)
-
-        print("\n===== SHAPE =====")
-        print(self.dataframe.shape)
+        df = pd.read_csv(self.csv_path, encoding=self.encoding)
+        return df
