@@ -4,7 +4,7 @@ colorama==0.4.6
 idna==3.18
 kagglehub==1.0.2
 kagglesdk==0.1.33
-numpy==2.5.0
+numpy==2.3.5
 packaging==26.2
 pandas==3.0.3
 protobuf==7.35.1
