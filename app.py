@@ -2,11 +2,22 @@ import streamlit as st
 import pandas as pd
 import sys
 import os
+import configparser
 
-# Ajouter le dossier racine au path pour les imports relatifs
+# Load confidential keys from the local config.ini file safely
+config = configparser.ConfigParser()
+config_file = "config.ini"
+
+if os.path.exists(config_file):
+    config.read(config_file)
+    if "API_KEYS" in config and "GEMINI_API_KEY" in config["API_KEYS"]:
+        # Securely inject the key into the environment variables dynamically
+        os.environ["GEMINI_API_KEY"] = config["API_KEYS"]["GEMINI_API_KEY"]
+
+# Add root directory to path for imports
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
-# Importations des modules du projet
+# Secure imports from the project modules
 try:
     from src.data_science.chatbot_engine import ChatbotEngine
     from src.bi_analytics.kpi_analyzer import KPIAnalyzer
@@ -18,29 +29,36 @@ except ImportError as e:
     MODULES_AVAILABLE = False
     IMPORT_ERROR = str(e)
 
-# Configuration de la page
+# --- AI Integration (Google GenAI Gemini) ---
+USE_GEMINI_AI = False
+# Gemini will seamlessly detect the key initialized from your config.ini file
+if "GEMINI_API_KEY" in os.environ:
+    try:
+        from google import genai
+        client = genai.Client()
+        USE_GEMINI_AI = True
+    except ImportError:
+        pass
+    
+# Page Configuration
 st.set_page_config(
     page_title="TARUMT Chatbot & BI Dashboard",
     page_icon="🤖",
     layout="wide"
 )
 
-# --- Initialisation des composants en cache ---
+# --- Cached Components Initialisation ---
 @st.cache_resource
 def init_components():
     if not MODULES_AVAILABLE:
         return None, None, None, None
     
-    # Correction précédente : Chargement via load_csv()
     loader = DataLoader(file_path="data/superstore.csv")
     df = loader.load_csv()
-    
-    # Correction actuelle : Appel de la méthode .clean() à la place de .clean_data()
     cleaner = DataCleaner(df)
     df_clean = cleaner.clean() 
     
-    # Initialisation du chatbot et des outils BI (avec injection du DataFrame nettoyé)
-    engine = ChatbotEngine(df_clean)
+    engine = ChatbotEngine(df_clean) 
     kpi = KPIAnalyzer(df_clean)
     anomaly = AnomalyDetector(df_clean)
     
@@ -49,74 +67,97 @@ def init_components():
 if MODULES_AVAILABLE:
     engine, kpi_analyzer, anomaly_detector, df_clean = init_components()
 else:
-    st.error(f"Erreur d'importation des modules du projet : {IMPORT_ERROR}")
+    st.error(f"Failed to import project modules: {IMPORT_ERROR}")
 
-# --- BARRE LATÉRALE : Tableau de bord BI ---
+# --- SIDEBAR: BI Analytics Dashboard ---
 with st.sidebar:
     st.title("📊 BI & Analytics Panel")
-    st.markdown("Vue d'ensemble automatisée basée sur vos modules `src/bi_analytics`.")
+    st.markdown("Automated insights powered by `src/bi_analytics`.")
     st.write("---")
     
     if MODULES_AVAILABLE and kpi_analyzer is not None:
-        st.subheader("📈 Indicateurs Clés (KPIs)")
+        st.subheader("📈 Key Performance Indicators")
         
-        # Utilisation des méthodes de KPIAnalyzer (qui pointent vers 'sales' et 'profit' en minuscules)
         total_sales = kpi_analyzer.total_sales()
         total_profit = kpi_analyzer.total_profit()
         
-        st.metric(label="Ventes Totales", value=f"${total_sales:,.2f}")
-        st.metric(label="Profit Total", value=f"${total_profit:,.2f}")
+        st.metric(label="Total Sales", value=f"${total_sales:,.2f}")
+        st.metric(label="Total Profit", value=f"${total_profit:,.2f}")
         
         st.write("---")
-        st.subheader("🚨 Alertes Anomalies")
+        st.subheader("🚨 Anomaly Alerts")
         
-        # Génération du rapport via AnomalyDetector
         report = anomaly_detector.get_anomaly_report()
-        nb_anomalies = (
-            report.get("high_sales_negative_profit_count", 0) + 
-            report.get("high_discount_negative_profit_count", 0)
-        )
+        high_sales_neg_profit = report.get("high_sales_negative_profit_count", 0)
+        high_disc_neg_profit = report.get("high_discount_negative_profit_count", 0)
+        nb_anomalies = high_sales_neg_profit + high_disc_neg_profit
         
         if nb_anomalies > 0:
-            st.warning(f"{nb_anomalies} transactions anormales (pertes financières) détectées.")
+            st.warning(f"{nb_anomalies} financial anomalies detected.")
+            with st.expander("See details"):
+                st.write(f"- High Sales with Negative Profit: {high_sales_neg_profit}")
+                st.write(f"- High Discount with Negative Profit: {high_disc_neg_profit}")
         else:
-            st.success("Aucune anomalie financière critique détectée.")
+            st.success("No critical financial anomalies found.")
+            
+        st.write("---")
+        st.caption(f"🤖 AI Fallback Layer: {'🟢 Active (Gemini)' if USE_GEMINI_AI else '🔴 Inactive'}")
     else:
-        st.info("Les fonctionnalités BI s'activeront lorsque les modules seront fonctionnels.")
+        st.info("BI features will load once modules are fixed.")
 
-# --- ZONE PRINCIPALE : L'interface Chatbot ---
-st.title("🤖 Assistant Intelligent TARUMT")
-st.caption("Posez vos questions en anglais ou français sur les indicateurs de ventes, les performances ou les pays.")
+# --- MAIN ZONE: Chatbot Interface ---
+st.title("🤖 TARUMT Smart Assistant")
+st.caption("Ask anything about sales, profits, shipping delays, or request deep business intelligence reasoning.")
 
-# Gestion de l'historique des discussions (session_state)
+# Handle Chat History
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "Bonjour ! Je suis l'assistant TARUMT. Posez-moi une question sur les ventes (sales), le profit ou les délais !"}
+        {"role": "assistant", "content": "Hello! I am your TARUMT data assistant. Ask me questions like 'What are the total sales?' or 'Find anomalies'."}
     ]
 
-# Affichage des messages de la conversation
+# Display conversation messages
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# Capture de la saisie utilisateur
-if user_query := st.chat_input("Ex: What are the total sales? / Quel est le profit total ?"):
-    # Affichage du message utilisateur
+# Capture user query
+if user_query := st.chat_input("Type your question here / Posez votre question ici..."):
     with st.chat_message("user"):
         st.markdown(user_query)
     st.session_state.messages.append({"role": "user", "content": user_query})
     
-    # Génération de la réponse via le ChatbotEngine du projet
     with st.chat_message("assistant"):
-        with st.spinner("Analyse des données en cours..."):
+        with st.spinner("Analyzing dataset..."):
             if MODULES_AVAILABLE and engine is not None:
                 try:
-                    # Correction : Appel de la méthode answer() définie dans votre ChatbotEngine
+                    # 1. Ask your local rule-based chatbot engine first
                     response = engine.answer(user_query)
+                    
+                    # 2. Gemini Fallback with language enforcement and high conciseness
+                    if USE_GEMINI_AI and ("cannot answer this question yet" in response.lower() or "sorry" in response.lower()):
+                        ai_prompt = f"""
+                        You are an expert business analyst assistant for the Superstore dataset.
+                        The user asked the following question: "{user_query}"
+                        
+                        Current global data context from the BI modules:
+                        - Total Superstore Sales: ${kpi_analyzer.total_sales():,.2f}
+                        - Total Superstore Profit: ${kpi_analyzer.total_profit():,.2f}
+                        - Detected Anomalies: {nb_anomalies}
+                        
+                        CRITICAL INSTRUCTIONS:
+                        1. Detect the language of the user query ("{user_query}"). If it is in French, reply strictly in French. If it is in English, reply strictly in English.
+                        2. Be extremely concise, direct, and straightforward. Provide short, bulletproof analytical summaries without friendly filler words or general introductions. Go straight to the data point requested.
+                        """
+                        ai_response = client.models.generate_content(
+                            model='gemini-2.5-flash',
+                            contents=ai_prompt,
+                        )
+                        response = ai_response.text
+                        
                 except Exception as e:
-                    response = f"Une erreur est survenue lors de l'analyse : {str(e)}"
+                    response = f"An error occurred during calculation: {str(e)}"
             else:
-                response = "Le moteur du chatbot n'est pas disponible. Veuillez vérifier vos dépendances."
+                response = "The chatbot core engine is currently unavailable."
         
         st.markdown(response)
     st.session_state.messages.append({"role": "assistant", "content": response})
