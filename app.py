@@ -17,6 +17,29 @@ if os.path.exists(config_file):
 # Add root directory to path for imports
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
+# --- SÉCURITÉ : Importations des modules de contrôle ---
+from src.security.auth import render_login_form
+from src.security.logger import log_security_event
+
+# Page Configuration (Placé impérativement avant toute exécution de composant de rendu Streamlit)
+st.set_page_config(
+    page_title="TARUMT Chatbot & BI Dashboard",
+    page_icon="🤖",
+    layout="wide"
+)
+
+# --- SÉCURITÉ : Vérification de la Session d'Authentification (RBAC) ---
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
+
+if not st.session_state["authenticated"]:
+    render_login_form()
+    st.stop()  # Interrompt immédiatement l'application tant que l'utilisateur n'est pas authentifié
+
+# Récupération sécurisée de l'identité et du rôle de l'utilisateur actif
+current_user = st.session_state["username"]
+user_role = st.session_state["role"]
+
 # Secure imports from the project modules
 try:
     from src.data_science.chatbot_engine import ChatbotEngine
@@ -40,13 +63,6 @@ if "GEMINI_API_KEY" in os.environ:
     except ImportError:
         pass
     
-# Page Configuration
-st.set_page_config(
-    page_title="TARUMT Chatbot & BI Dashboard",
-    page_icon="🤖",
-    layout="wide"
-)
-
 # --- Cached Components Initialisation ---
 @st.cache_resource
 def init_components():
@@ -72,6 +88,7 @@ else:
 # --- SIDEBAR: BI Analytics Dashboard ---
 with st.sidebar:
     st.title("📊 BI & Analytics Panel")
+    st.markdown(f"Connected as: **{current_user}** (`{user_role}`)") # Affichage du profil connecté
     st.markdown("Automated insights powered by `src/bi_analytics`.")
     st.write("---")
     
@@ -104,6 +121,12 @@ with st.sidebar:
         st.caption(f"🤖 AI Fallback Layer: {'🟢 Active (Gemini)' if USE_GEMINI_AI else '🔴 Inactive'}")
     else:
         st.info("BI features will load once modules are fixed.")
+        
+    # Bouton de clôture de session (Log out)
+    if st.button("🚪 Log out"):
+        log_security_event(current_user, user_role, "logout", "SUCCESS", "Voluntary disconnection")
+        st.session_state["authenticated"] = False
+        st.rerun()
 
 # --- MAIN ZONE: Chatbot Interface ---
 st.title("🤖 TARUMT Smart Assistant")
@@ -125,6 +148,9 @@ if user_query := st.chat_input("Type your question here / Posez votre question i
     with st.chat_message("user"):
         st.markdown(user_query)
     st.session_state.messages.append({"role": "user", "content": user_query})
+    
+    # --- SÉCURITÉ : Audit Log de la requête brute soumise ---
+    log_security_event(current_user, user_role, "ask_chatbot", "ALLOWED", f"Query: {user_query}")
     
     with st.chat_message("assistant"):
         with st.spinner("Analyzing dataset..."):

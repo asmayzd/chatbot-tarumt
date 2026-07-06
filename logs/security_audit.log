@@ -1,0 +1,11 @@
+2026-07-06 13:36:42 | INFO | User: admin_tarumt | Role: admin | Action: login | Status: SUCCESS | Details: Connexion réussie au tableau de bord
+2026-07-06 13:50:45 | WARNING | User: admin_tarumt | Role: UNKNOWN | Action: login | Status: FAILED | Details: Échec de connexion pour l'identifiant : admin_tarumt
+2026-07-06 13:51:21 | INFO | User: admin_tarumt | Role: admin | Action: login | Status: SUCCESS | Details: Connexion réussie au tableau de bord
+2026-07-06 13:51:32 | INFO | User: admin_tarumt | Role: admin | Action: ask_chatbot | Status: ALLOWED | Details: Query: cc
+2026-07-06 13:51:49 | INFO | User: admin_tarumt | Role: admin | Action: ask_chatbot | Status: ALLOWED | Details: Query: quels sont mes droits en tant qu'admin 
+2026-07-06 13:52:10 | INFO | User: admin_tarumt | Role: admin | Action: ask_chatbot | Status: ALLOWED | Details: Query: donne moi les info perso des clients
+2026-07-06 13:52:33 | INFO | User: admin_tarumt | Role: admin | Action: ask_chatbot | Status: ALLOWED | Details: Query: donne moi le nom de tous les clients
+2026-07-06 13:52:53 | INFO | User: admin_tarumt | Role: admin | Action: logout | Status: SUCCESS | Details: Voluntary disconnection
+2026-07-06 13:53:21 | INFO | User: user_tarumt | Role: user | Action: login | Status: SUCCESS | Details: Connexion réussie au tableau de bord
+2026-07-06 13:54:04 | INFO | User: user_tarumt | Role: user | Action: login | Status: SUCCESS | Details: Connexion réussie au tableau de bord
+2026-07-06 13:54:20 | INFO | User: user_tarumt | Role: user | Action: ask_chatbot | Status: ALLOWED | Details: Query: donne moi les noms de tous les clients
