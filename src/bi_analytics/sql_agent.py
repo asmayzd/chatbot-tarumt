@@ -5,12 +5,13 @@ import pandas as pd
 
 class SQLAgent:
     """
-    Natural-language-to-SQL agent for the Superstore dataset.
+    Natural-language-to-SQL agent for the Superstore relational database.
 
-    The agent loads a cleaned DataFrame into an in-memory SQLite
-    database, uses the Gemini LLM to translate a natural language
-    question into a safe SELECT query, validates it, executes it,
-    and returns the result.
+    The agent connects to the persistent SQLite database (built from the
+    schema.sql DDL), introspects the schema of the business tables and
+    their foreign keys, then uses the Gemini LLM to translate a natural
+    language question into a safe SELECT query (with JOINs when needed),
+    validates it, executes it, and returns the result.
     """
 
     FORBIDDEN_KEYWORDS = [
@@ -19,23 +20,19 @@ class SQLAgent:
         "vacuum", "reindex", "grant", "revoke",
     ]
 
-    def __init__(self, df: pd.DataFrame, table_name: str = "superstore",
-                 model: str = "gemini-2.5-flash"):
-        self.df = df.copy()
-        self.table_name = table_name
+    DEFAULT_TABLES = ["customers", "products", "orders", "order_items"]
+
+    def __init__(self, db_path: str = "data/superstore_bi.db",
+                 allowed_tables=None, model: str = "gemini-2.5-flash"):
+        self.db_path = db_path
+        self.allowed_tables = allowed_tables or self.DEFAULT_TABLES
         self.model = model
         self.connection = None
         self.client = None
 
-    def build_database(self):
-        """Load the DataFrame into an in-memory SQLite database."""
-        self.connection = sqlite3.connect(":memory:", check_same_thread=False)
-        self.df.to_sql(
-            self.table_name,
-            self.connection,
-            if_exists="replace",
-            index=False,
-        )
+    def connect_database(self):
+        """Open a connection to the persistent database (Streamlit-safe)."""
+        self.connection = sqlite3.connect(self.db_path, check_same_thread=False)
         return self
 
     def init_gemini(self):
@@ -45,18 +42,32 @@ class SQLAgent:
         return self
 
     def setup(self):
-        """Convenience method: build the database and init Gemini."""
-        return self.build_database().init_gemini()
+        """Convenience method: connect to the DB and init Gemini."""
+        return self.connect_database().init_gemini()
 
     def get_schema_description(self) -> str:
-        """Build a textual description of the table schema for the prompt."""
-        lines = [f"Table name: {self.table_name}", "Columns:"]
+        """Describe allowed tables, columns and foreign keys for the prompt."""
+        if self.connection is None:
+            raise ValueError("Database not connected. Call connect_database() first.")
 
-        for column in self.df.columns:
-            dtype = str(self.df[column].dtype)
-            sample_values = self.df[column].dropna().unique()[:3]
-            samples = ", ".join(str(value) for value in sample_values)
-            lines.append(f"- {column} ({dtype}) e.g. {samples}")
+        cursor = self.connection.cursor()
+        lines = []
+
+        for table in self.allowed_tables:
+            cursor.execute(f"PRAGMA table_info({table})")
+            columns = cursor.fetchall()
+
+            if not columns:
+                continue
+
+            column_descriptions = [
+                f"{col[1]} ({col[2] or 'TEXT'})" for col in columns
+            ]
+            lines.append(f"Table {table}: " + ", ".join(column_descriptions))
+
+            cursor.execute(f"PRAGMA foreign_key_list({table})")
+            for fk in cursor.fetchall():
+                lines.append(f"  - {table}.{fk[3]} references {fk[2]}.{fk[4]}")
 
         return "\n".join(lines)
 
@@ -66,14 +77,19 @@ class SQLAgent:
         return f"""
 You are an expert data analyst who writes SQLite queries.
 
+Database schema (relational, use JOINs when the answer spans several tables):
 {schema}
 
 Rules:
 1. Write ONE single valid SQLite SELECT query that answers the question.
-2. Only use the table and columns listed above.
-3. Output ONLY the raw SQL query: no explanation, no comment, no markdown.
-4. Never modify data: only SELECT statements are allowed.
-5. Use LIMIT when the user asks for "top", "best" or "worst" results.
+2. Only use the tables and columns listed above.
+3. Numeric measures (sales, profit, quantity, discount) live in order_items.
+   Country, city, region, market and dates live in orders.
+   Category and product_name live in products. Segment lives in customers.
+   Join through order_id and product_id / customer_id when needed.
+4. Output ONLY the raw SQL query: no explanation, no comment, no markdown.
+5. Never modify data: only SELECT statements are allowed.
+6. Use LIMIT when the user asks for "top", "best" or "worst" results.
 
 User question: "{question}"
 
@@ -95,7 +111,6 @@ SQL query:
         if not lowered.startswith("select"):
             return False
 
-        # Block stacked queries (only one statement allowed)
         if ";" in sql.strip().rstrip(";"):
             return False
 
@@ -108,9 +123,7 @@ SQL query:
     def generate_sql(self, question: str) -> str:
         """Ask Gemini to translate the question into a SQL query."""
         if self.client is None:
-            raise ValueError(
-                "Gemini client not initialised. Call init_gemini() first."
-            )
+            raise ValueError("Gemini client not initialised. Call init_gemini() first.")
 
         prompt = self._build_prompt(question)
 
@@ -124,17 +137,12 @@ SQL query:
     def run_sql(self, sql: str) -> pd.DataFrame:
         """Execute a SQL query and return the result as a DataFrame."""
         if self.connection is None:
-            raise ValueError(
-                "Database not built. Call build_database() first."
-            )
+            raise ValueError("Database not connected. Call connect_database() first.")
 
         return pd.read_sql_query(sql, self.connection)
 
     def ask(self, question: str) -> dict:
-        """
-        Full pipeline: question -> SQL -> security check -> execution.
-        Returns a dictionary with the generated SQL and the result.
-        """
+        """Full pipeline: question -> SQL -> security check -> execution."""
         sql = self.generate_sql(question)
 
         if not self.is_safe_sql(sql):
