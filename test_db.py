@@ -18,4 +18,6 @@ ddl = cursor.fetchone()
 if ddl:
     print(ddl[0])
 
+cursor.execute("SELECT COUNT(*) FROM order_items;")
+print(f"🔢 Nombre total de lignes d'articles insérées : {cursor.fetchone()[0]}")
 conn.close()
