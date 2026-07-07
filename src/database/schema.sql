@@ -39,6 +39,9 @@ CREATE TABLE IF NOT EXISTS order_items (
     profit REAL NOT NULL,
     shipping_cost REAL NOT NULL,
     order_priority TEXT NOT NULL,
+    shipping_delay_days INTEGER NULL,
+    profit_margin REAL NULL,
+    chatbot_context TEXT NULL,
     FOREIGN KEY (order_id) REFERENCES orders(order_id) ON DELETE CASCADE,
     FOREIGN KEY (product_id) REFERENCES products(product_id) ON DELETE CASCADE
 );
