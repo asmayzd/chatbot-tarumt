@@ -4,6 +4,10 @@ import sys
 import os
 import configparser
 
+# Intégration des tables SQL
+from src.database.db_manager import init_db
+init_db()
+
 # Load confidential keys from the local config.ini file safely
 config = configparser.ConfigParser()
 config_file = "config.ini"

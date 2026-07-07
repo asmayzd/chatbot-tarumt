@@ -9,3 +9,9 @@
 2026-07-06 13:53:21 | INFO | User: user_tarumt | Role: user | Action: login | Status: SUCCESS | Details: Connexion réussie au tableau de bord
 2026-07-06 13:54:04 | INFO | User: user_tarumt | Role: user | Action: login | Status: SUCCESS | Details: Connexion réussie au tableau de bord
 2026-07-06 13:54:20 | INFO | User: user_tarumt | Role: user | Action: ask_chatbot | Status: ALLOWED | Details: Query: donne moi les noms de tous les clients
+2026-07-06 15:36:57 | INFO | User: user_tarumt | Role: user | Action: login | Status: SUCCESS | Details: Connexion réussie au tableau de bord
+2026-07-07 09:26:02 | WARNING | User: usertarumt | Role: UNKNOWN | Action: login | Status: FAILED | Details: Échec de connexion pour l'identifiant : usertarumt
+2026-07-07 09:26:07 | WARNING | User: usertarumt | Role: UNKNOWN | Action: login | Status: FAILED | Details: Échec de connexion pour l'identifiant : usertarumt
+2026-07-07 09:26:10 | WARNING | User: usertarumt | Role: UNKNOWN | Action: login | Status: FAILED | Details: Échec de connexion pour l'identifiant : usertarumt
+2026-07-07 09:26:12 | WARNING | User: usertarumt | Role: UNKNOWN | Action: login | Status: FAILED | Details: Échec de connexion pour l'identifiant : usertarumt
+2026-07-07 09:26:35 | INFO | User: user_tarumt | Role: user | Action: login | Status: SUCCESS | Details: Connexion réussie au tableau de bord
