@@ -4,3 +4,5 @@ __pycache__/
 data/dataset_clean.csv
 
 config.ini
+
+data/superstore.csv
