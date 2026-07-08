@@ -49,6 +49,7 @@ try:
     from src.data_science.chatbot_engine import ChatbotEngine
     from src.bi_analytics.kpi_analyzer import KPIAnalyzer
     from src.bi_analytics.anomaly_detector import AnomalyDetector
+    from src.bi_analytics.sql_agent import SQLAgent
     from src.data_science.data_loader import DataLoader
     from src.data_science.data_cleaner import DataCleaner
     MODULES_AVAILABLE = True
@@ -66,26 +67,31 @@ if "GEMINI_API_KEY" in os.environ:
         USE_GEMINI_AI = True
     except ImportError:
         pass
-    
+
 # --- Cached Components Initialisation ---
 @st.cache_resource
 def init_components():
     if not MODULES_AVAILABLE:
-        return None, None, None, None
-    
+        return None, None, None, None, None
+
     loader = DataLoader(file_path="data/superstore.csv")
     df = loader.load_csv()
     cleaner = DataCleaner(df)
-    df_clean = cleaner.clean() 
-    
-    engine = ChatbotEngine(df_clean) 
+    df_clean = cleaner.clean()
+
+    engine = ChatbotEngine(df_clean)
     kpi = KPIAnalyzer(df_clean)
     anomaly = AnomalyDetector(df_clean)
-    
-    return engine, kpi, anomaly, df_clean
+
+    # L'agent SQL interroge la base relationnelle persistante (schema.sql).
+    sql_agent = None
+    if USE_GEMINI_AI:
+        sql_agent = SQLAgent(db_path="data/superstore_bi.db").setup()
+
+    return engine, kpi, anomaly, sql_agent, df_clean
 
 if MODULES_AVAILABLE:
-    engine, kpi_analyzer, anomaly_detector, df_clean = init_components()
+    engine, kpi_analyzer, anomaly_detector, sql_agent, df_clean = init_components()
 else:
     st.error(f"Failed to import project modules: {IMPORT_ERROR}")
 
@@ -95,24 +101,24 @@ with st.sidebar:
     st.markdown(f"Connected as: **{current_user}** (`{user_role}`)") # Affichage du profil connecté
     st.markdown("Automated insights powered by `src/bi_analytics`.")
     st.write("---")
-    
+
     if MODULES_AVAILABLE and kpi_analyzer is not None:
         st.subheader("📈 Key Performance Indicators")
-        
+
         total_sales = kpi_analyzer.total_sales()
         total_profit = kpi_analyzer.total_profit()
-        
+
         st.metric(label="Total Sales", value=f"${total_sales:,.2f}")
         st.metric(label="Total Profit", value=f"${total_profit:,.2f}")
-        
+
         st.write("---")
         st.subheader("🚨 Anomaly Alerts")
-        
+
         report = anomaly_detector.get_anomaly_report()
         high_sales_neg_profit = report.get("high_sales_negative_profit_count", 0)
         high_disc_neg_profit = report.get("high_discount_negative_profit_count", 0)
         nb_anomalies = high_sales_neg_profit + high_disc_neg_profit
-        
+
         if nb_anomalies > 0:
             st.warning(f"{nb_anomalies} financial anomalies detected.")
             with st.expander("See details"):
@@ -120,17 +126,32 @@ with st.sidebar:
                 st.write(f"- High Discount with Negative Profit: {high_disc_neg_profit}")
         else:
             st.success("No critical financial anomalies found.")
-            
+
         st.write("---")
-        st.caption(f"🤖 AI Fallback Layer: {'🟢 Active (Gemini)' if USE_GEMINI_AI else '🔴 Inactive'}")
+        st.caption(f"🤖 SQL Agent: {'🟢 Active (Gemini)' if sql_agent else '🔴 Inactive'}")
     else:
         st.info("BI features will load once modules are fixed.")
-        
+
     # Bouton de clôture de session (Log out)
     if st.button("🚪 Log out"):
         log_security_event(current_user, user_role, "logout", "SUCCESS", "Voluntary disconnection")
         st.session_state["authenticated"] = False
         st.rerun()
+
+
+# --- Helper: render an assistant message (with optional SQL detail) ---
+def render_assistant_message(message: dict):
+    st.markdown(message["content"])
+
+    # If this answer was produced by the SQL agent, show the query on demand.
+    if message.get("sql"):
+        with st.expander("🔍 Détails — requête SQL utilisée"):
+            st.code(message["sql"], language="sql")
+
+            result = message.get("result")
+            if result is not None and not result.empty:
+                st.dataframe(result, use_container_width=True)
+
 
 # --- MAIN ZONE: Chatbot Interface ---
 st.title("🤖 TARUMT Smart Assistant")
@@ -139,55 +160,63 @@ st.caption("Ask anything about sales, profits, shipping delays, or request deep 
 # Handle Chat History
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "Hello! I am your TARUMT data assistant. Ask me questions like 'What are the total sales?' or 'Find anomalies'."}
+        {"role": "assistant", "content": "Hello! I am your TARUMT data assistant. Ask me questions like 'What are the total sales?' or 'Top 5 countries by profit'."}
     ]
 
 # Display conversation messages
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+        if message["role"] == "assistant":
+            render_assistant_message(message)
+        else:
+            st.markdown(message["content"])
 
 # Capture user query
 if user_query := st.chat_input("Type your question here / Posez votre question ici..."):
     with st.chat_message("user"):
         st.markdown(user_query)
     st.session_state.messages.append({"role": "user", "content": user_query})
-    
+
     # --- SÉCURITÉ : Audit Log de la requête brute soumise ---
     log_security_event(current_user, user_role, "ask_chatbot", "ALLOWED", f"Query: {user_query}")
-    
+
     with st.chat_message("assistant"):
         with st.spinner("Analyzing dataset..."):
-            if MODULES_AVAILABLE and engine is not None:
+            # Default assistant message (may be enriched with SQL below)
+            assistant_message = {"role": "assistant", "content": "", "sql": None, "result": None}
+
+            if not MODULES_AVAILABLE or engine is None:
+                assistant_message["content"] = "The chatbot core engine is currently unavailable."
+
+            elif sql_agent is not None:
+                # --- Primary path: natural-language-to-SQL agent ---
                 try:
-                    # 1. Ask your local rule-based chatbot engine first
-                    response = engine.answer(user_query)
-                    
-                    # 2. Gemini Fallback with language enforcement and high conciseness
-                    if USE_GEMINI_AI and ("cannot answer this question yet" in response.lower() or "sorry" in response.lower()):
-                        ai_prompt = f"""
-                        You are an expert business analyst assistant for the Superstore dataset.
-                        The user asked the following question: "{user_query}"
-                        
-                        Current global data context from the BI modules:
-                        - Total Superstore Sales: ${kpi_analyzer.total_sales():,.2f}
-                        - Total Superstore Profit: ${kpi_analyzer.total_profit():,.2f}
-                        - Detected Anomalies: {nb_anomalies}
-                        
-                        CRITICAL INSTRUCTIONS:
-                        1. Detect the language of the user query ("{user_query}"). If it is in French, reply strictly in French. If it is in English, reply strictly in English.
-                        2. Be extremely concise, direct, and straightforward. Provide short, bulletproof analytical summaries without friendly filler words or general introductions. Go straight to the data point requested.
-                        """
-                        ai_response = client.models.generate_content(
-                            model='gemini-2.5-flash',
-                            contents=ai_prompt,
-                        )
-                        response = ai_response.text
-                        
+                    outcome = sql_agent.ask(user_query)
+
+                    if outcome["error"]:
+                        # Query rejected (security) or failed to execute.
+                        assistant_message["content"] = outcome["error"]
+                        assistant_message["sql"] = outcome["sql"]
+                        log_security_event(current_user, user_role, "sql_query", "REJECTED", f"SQL: {outcome['sql']}")
+                    else:
+                        # Natural-language answer + keep the SQL for the expander.
+                        answer = sql_agent.explain_result(user_query, outcome["result"])
+                        assistant_message["content"] = answer
+                        assistant_message["sql"] = outcome["sql"]
+                        assistant_message["result"] = outcome["result"]
+                        log_security_event(current_user, user_role, "sql_query", "EXECUTED", f"SQL: {outcome['sql']}")
+
                 except Exception as e:
-                    response = f"An error occurred during calculation: {str(e)}"
+                    assistant_message["content"] = f"An error occurred: {str(e)}"
+
             else:
-                response = "The chatbot core engine is currently unavailable."
-        
-        st.markdown(response)
-    st.session_state.messages.append({"role": "assistant", "content": response})
+                # --- Fallback: rule-based engine when Gemini is unavailable ---
+                try:
+                    assistant_message["content"] = engine.answer(user_query)
+                except Exception as e:
+                    assistant_message["content"] = f"An error occurred during calculation: {str(e)}"
+
+        # Render the fresh answer immediately
+        render_assistant_message(assistant_message)
+
+    st.session_state.messages.append(assistant_message)
