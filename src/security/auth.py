@@ -67,4 +67,3 @@ def render_login_form():
                     st.rerun()
                 else:
                     log_security_event(username, "UNKNOWN", "login", "FAILED", f"Échec de connexion pour l'identifiant : {username}")
-E7
