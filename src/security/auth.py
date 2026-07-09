@@ -2,36 +2,54 @@ import hashlib
 import streamlit as st
 from src.security.logger import log_security_event
 
-# Base de données simulée (Identifiant: {Mots de passe hachés, Rôle affecté})
-# Mots de passe valides : 'admin123', 'analyst123', 'user123'
+# Base de données simulée (Customer ID / Username: {Mot de passe, Nom, Rôle})
+# Contient les 3 rôles de base et tes 3 clients réels issus du fichier superstore.csv
 USER_DB = {
     "admin_tarumt": {
         "password": hashlib.sha256("admin123".encode()).hexdigest(),
+        "customer_name": "Administrator",
         "role": "admin"
     },
     "analyst_tarumt": {
         "password": hashlib.sha256("analyst123".encode()).hexdigest(),
+        "customer_name": "Analyst BI",
         "role": "analyst"
     },
     "user_tarumt": {
         "password": hashlib.sha256("user123".encode()).hexdigest(),
+        "customer_name": "Generic User",
+        "role": "user"
+    },
+    # Nouveaux profils clients réels de ta base de données
+    "CS-121304": {
+        "password": hashlib.sha256("user123".encode()).hexdigest(),
+        "customer_name": "Chad Sievert",
+        "role": "user"
+    },
+    "AP-109154": {
+        "password": hashlib.sha256("user123".encode()).hexdigest(),
+        "customer_name": "Arthur Prichep",
+        "role": "user"
+    },
+    "JF-154904": {
+        "password": hashlib.sha256("user123".encode()).hexdigest(),
+        "customer_name": "Jeremy Farry",
         "role": "user"
     }
 }
 
 
 def verify_credentials(username, password):
-    """Vérifie la validité des identifiants entrés."""
+    """Vérifie la validité des identifiants entrés et retourne (role, customer_name)."""
     if username in USER_DB:
         hashed_password = hashlib.sha256(password.encode()).hexdigest()
         if USER_DB[username]["password"] == hashed_password:
-            return USER_DB[username]["role"]
-    return None
+            return USER_DB[username]["role"], USER_DB[username]["customer_name"]
+    return None, None
 
 
 def render_login_form():
-    """Affiche l'interface graphique du formulaire de connexion (design moderne)."""
-    # Carte de connexion centrée
+    """Affiche l'interface graphique du formulaire de connexion."""
     left, center, right = st.columns([1, 1.3, 1])
 
     with center:
@@ -43,7 +61,7 @@ def render_login_form():
                     TARUMT System
                 </h1>
                 <p style="color:#6b7280; margin:0;">
-                    Authentifiez-vous pour activer le modèle Gemini et le tableau de bord BI.
+                    Please login with your credentials or Customer ID (e.g., CS-121304).
                 </p>
             </div>
             """,
@@ -51,19 +69,21 @@ def render_login_form():
         )
 
         with st.form("login_form"):
-            username = st.text_input("Identifiant utilisateur", placeholder="ex. analyst_tarumt")
-            password = st.text_input("Mot de passe", type="password", placeholder="••••••••")
+            username = st.text_input("Customer ID / Username", placeholder="ex. CS-121304")
+            password = st.text_input("Password", type="password", placeholder="••••••••")
             submit = st.form_submit_button("Se connecter", use_container_width=True)
 
             if submit:
-                role = verify_credentials(username, password)
+                role, customer_name = verify_credentials(username, password)
                 if role:
                     st.session_state["authenticated"] = True
                     st.session_state["username"] = username
+                    st.session_state["customer_name"] = customer_name
                     st.session_state["role"] = role
 
-                    log_security_event(username, role, "login", "SUCCESS", "Connexion réussie au tableau de bord")
-                    st.success(f"Bienvenue {username} ({role}) !")
+                    log_security_event(username, role, "login", "SUCCESS", f"User {customer_name} connected")
+                    st.success(f"Bienvenue {customer_name} ({role}) !")
                     st.rerun()
                 else:
-                    log_security_event(username, "UNKNOWN", "login", "FAILED", f"Échec de connexion pour l'identifiant : {username}")
+                    log_security_event(username, "UNKNOWN", "login", "FAILED", f"Échec de connexion")
+                    st.error("Invalid Customer ID or Password.")
