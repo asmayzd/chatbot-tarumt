@@ -1,8 +1,17 @@
+# Environnements virtuels
 env/
+venv/
+.venv/
+
+# Python
 __pycache__/
 *.pyc
-data/dataset_clean.csv
 
+# Secrets — NE JAMAIS COMMITER
 config.ini
 
-data/superstore.csv
+# Logs générés automatiquement
+logs/
+
+# Données générées
+data/dataset_clean.csv
