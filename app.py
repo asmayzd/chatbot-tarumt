@@ -39,6 +39,56 @@ st.set_page_config(
 )
 
 # ============================================================
+#  DICTIONNAIRE DE TRADUCTION (Dictionnaire Multilingue)
+# ============================================================
+TRANSLATIONS = {
+    "EN": {
+        "sql_active": "🟢 Active (Gemini)",
+        "sql_inactive": "🔴 Inactive",
+        "bi_granted": "🟢 Access Granted",
+        "bi_locked": "🔒 Restricted (analyst / admin)",
+        "security_warn": "Security Warnings",
+        "logout": "🚪 Log out",
+        "hero_desc": "Ask your questions about sales, profits, and delivery times in natural language.",
+        "connected": "Connected",
+        "sales_sub": "global turnover",
+        "profit_sub": "global net profit",
+        "anomaly_warn": "needs monitoring",
+        "anomaly_ok": "no critical alerts",
+        "anomaly_expander": "View financial anomaly details",
+        "anomaly_sales": "High sales with negative profit",
+        "anomaly_disc": "High discount with negative profit",
+        "bi_restricted_info": "🔒 The BI Analytics Dashboard is reserved for **analyst** and **admin** roles. However, you can still ask your questions to the assistant below.",
+        "sql_expander": "🔍 Details — SQL query used",
+        "welcome": "Hello! I am your TARUMT data assistant. Try asking: 'Top 5 countries by sales' or 'profit by category'.",
+        "chat_placeholder": "Type your question here...",
+        "spinner": "Analyzing..."
+    },
+    "FR": {
+        "sql_active": "🟢 Actif (Gemini)",
+        "sql_inactive": "🔴 Inactif",
+        "bi_granted": "🟢 Accès Autorisé",
+        "bi_locked": "🔒 Réservé (analyst / admin)",
+        "security_warn": "Avertissements de Sécurité",
+        "logout": "🚪 Se déconnecter",
+        "hero_desc": "Posez vos questions sur les ventes, les profits et les délais de livraison en langage naturel.",
+        "connected": "Connecté",
+        "sales_sub": "chiffre d'affaires global",
+        "profit_sub": "bénéfice net global",
+        "anomaly_warn": "à surveiller",
+        "anomaly_ok": "aucune alerte critique",
+        "anomaly_expander": "Voir le détail des anomalies financières",
+        "anomaly_sales": "Ventes élevées avec profit négatif",
+        "anomaly_disc": "Remises élevées avec profit négatif",
+        "bi_restricted_info": "🔒 Le tableau de bord BI Analytics est réservé aux rôles **analyst** et **admin**. Vous pouvez néanmoins poser vos questions à l'assistant ci-dessous.",
+        "sql_expander": "🔍 Détails — requête SQL utilisée",
+        "welcome": "Bonjour ! Je suis votre assistant data TARUMT. Essayez par exemple : 'Top 5 des pays par ventes' ou 'profit par catégorie'.",
+        "chat_placeholder": "Posez votre question ici...",
+        "spinner": "Analyse en cours..."
+    }
+}
+
+# ============================================================
 #  STYLE GLOBAL — interface moderne (CSS injecté)
 # ============================================================
 st.markdown("""
@@ -123,7 +173,6 @@ current_user = st.session_state["username"]
 current_name = st.session_state.get("customer_name", "User")
 user_role = st.session_state["role"]
 
-# Rôles autorisés à voir le tableau de bord BI Analytics
 BI_ALLOWED_ROLES = ("admin", "analyst")
 can_view_bi = user_role in BI_ALLOWED_ROLES
 
@@ -196,6 +245,11 @@ def kpi_card(icon, label, value, accent_bg, accent_fg, sub=""):
 #  SIDEBAR
 # ============================================================
 with st.sidebar:
+    # Sélecteur de langue minimal et efficace
+    selected_lang = st.selectbox("🌐 Language / Langue", ["EN", "FR"], index=0)
+    lang = TRANSLATIONS[selected_lang]
+
+    st.write("")
     st.markdown(
         f'<div class="profile-card">'
         f'<div class="profile-name">👤 {current_name}</div>'
@@ -204,21 +258,21 @@ with st.sidebar:
         unsafe_allow_html=True
     )
 
-    st.caption(f"🤖 SQL Agent: {'🟢 Active (Gemini)' if (MODULES_AVAILABLE and sql_agent) else '🔴 Inactive'}")
+    st.caption(f"🤖 SQL Agent: {lang['sql_active'] if (MODULES_AVAILABLE and sql_agent) else lang['sql_inactive']}")
 
     if can_view_bi:
-        st.caption("📊 BI Analytics: 🟢 Access Granted")
+        st.caption(f"📊 BI Analytics: {lang['bi_granted']}")
     else:
-        st.caption("📊 BI Analytics: 🔒 Restricted (analyst / admin)")
+        st.caption(f"📊 BI Analytics: {lang['bi_locked']}")
 
     # Récupération propre du compteur de violations
     violations_count = st.session_state.get("security_violations", 0)
     if violations_count > 0:
-        st.markdown(f"⚠️ **Security Warnings:** `{violations_count}/3`")
+        st.markdown(f"⚠️ **{lang['security_warn']}:** `{violations_count}/3`")
 
     st.write("---")
 
-    if st.button("🚪 Log out", use_container_width=True):
+    if st.button(lang["logout"], use_container_width=True):
         log_security_event(current_user, user_role, "logout", "SUCCESS", "Voluntary disconnection")
         st.session_state["authenticated"] = False
         st.session_state["security_violations"] = 0
@@ -232,8 +286,8 @@ st.markdown(
     f"""
     <div class="hero">
         <h1>🤖 TARUMT Smart Assistant</h1>
-        <p>Ask your questions about sales, profits, and delivery times in natural language.</p>
-        <span class="role-badge">Connected: {current_name} — {user_role}</span>
+        <p>{lang['hero_desc']}</p>
+        <span class="role-badge">{lang['connected']}: {current_name} — {user_role}</span>
     </div>
     """,
     unsafe_allow_html=True
@@ -255,16 +309,16 @@ if MODULES_AVAILABLE and kpi_analyzer is not None and can_view_bi:
 
     anomaly_bg = "#fef3c7" if nb_anomalies > 0 else "#d1fae5"
     anomaly_fg = "#d97706" if nb_anomalies > 0 else "#059669"
-    anomaly_sub = "needs monitoring" if nb_anomalies > 0 else "no critical alerts"
+    anomaly_sub = lang["anomaly_warn"] if nb_anomalies > 0 else lang["anomaly_ok"]
 
     c1, c2, c3 = st.columns(3)
     with c1:
         st.markdown(kpi_card("💰", "Total Sales", f"${total_sales:,.0f}",
-                             "#e0e7ff", "#4f46e5", "global turnover"),
+                             "#e0e7ff", "#4f46e5", lang["sales_sub"]),
                     unsafe_allow_html=True)
     with c2:
         st.markdown(kpi_card("📈", "Total Profit", f"${total_profit:,.0f}",
-                             "#dcfce7", "#16a34a", "global net profit"),
+                             "#dcfce7", "#16a34a", lang["profit_sub"]),
                     unsafe_allow_html=True)
     with c3:
         st.markdown(kpi_card("🚨", "Anomalies", f"{nb_anomalies}",
@@ -272,15 +326,14 @@ if MODULES_AVAILABLE and kpi_analyzer is not None and can_view_bi:
                     unsafe_allow_html=True)
 
     if nb_anomalies > 0:
-        with st.expander("View financial anomaly details"):
-            st.write(f"- High sales with negative profit: {high_sales_neg_profit}")
-            st.write(f"- High discount with negative profit: {high_disc_neg_profit}")
+        with st.expander(lang["anomaly_expander"]):
+            st.write(f"- {lang['anomaly_sales']}: {high_sales_neg_profit}")
+            st.write(f"- {lang['anomaly_disc']}: {high_disc_neg_profit}")
 
     st.write("")
 
 elif MODULES_AVAILABLE and not can_view_bi:
-    st.info("🔒 The BI Analytics Dashboard is reserved for **analyst** and **admin** roles. "
-            "However, you can still ask your questions to the assistant below.")
+    st.info(lang["bi_restricted_info"])
 
 
 # ============================================================
@@ -289,7 +342,7 @@ elif MODULES_AVAILABLE and not can_view_bi:
 def render_assistant_message(message: dict):
     st.markdown(message["content"])
     if message.get("sql"):
-        with st.expander("🔍 Details — SQL query used"):
+        with st.expander(lang["sql_expander"]):
             st.code(message["sql"], language="sql")
             result = message.get("result")
             if result is not None and not result.empty:
@@ -301,9 +354,12 @@ def render_assistant_message(message: dict):
 # ============================================================
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "Hello! I am your TARUMT data assistant. "
-                                          "Try asking: 'Top 5 countries by sales' or 'profit by category'."}
+        {"role": "assistant", "content": lang["welcome"]}
     ]
+
+# Ajuste dynamiquement la langue du premier message d'accueil si l'historique contient uniquement ce message
+if len(st.session_state.messages) == 1 and st.session_state.messages[0]["role"] == "assistant":
+    st.session_state.messages[0]["content"] = lang["welcome"]
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -312,7 +368,7 @@ for message in st.session_state.messages:
         else:
             st.markdown(message["content"])
 
-if user_query := st.chat_input("Type your question here..."):
+if user_query := st.chat_input(lang["chat_placeholder"]):
     with st.chat_message("user"):
         st.markdown(user_query)
     st.session_state.messages.append({"role": "user", "content": user_query})
@@ -335,7 +391,7 @@ if user_query := st.chat_input("Type your question here..."):
         log_security_event(current_user, user_role, "ask_chatbot", "ALLOWED", f"Query: {user_query}")
 
         with st.chat_message("assistant"):
-            with st.spinner("Analyzing..."):
+            with st.spinner(lang["spinner"]):
                 assistant_message = {"role": "assistant", "content": "", "sql": None, "result": None}
 
                 if not MODULES_AVAILABLE or engine is None:
@@ -343,6 +399,8 @@ if user_query := st.chat_input("Type your question here..."):
 
                 elif sql_agent is not None and user_role != "user":
                     try:
+                        # Demander explicitement à l'agent de générer l'analyse dans la langue sélectionnée
+                        localized_query = user_query + f" (Reply strictly in {selected_lang})"
                         outcome = sql_agent.ask(user_query, role=user_role)
                         
                         if outcome["error"]:
@@ -352,7 +410,7 @@ if user_query := st.chat_input("Type your question here..."):
                             
                             should_ban = check_sql_outcome_security(outcome["error"], current_user, user_role, user_query)
                         else:
-                            answer = sql_agent.explain_result(user_query, outcome["result"])
+                            answer = sql_agent.explain_result(localized_query, outcome["result"])
                             assistant_message["content"] = answer
                             assistant_message["sql"] = outcome["sql"]
                             assistant_message["result"] = outcome["result"]

@@ -82,7 +82,7 @@ def render_login_form():
                     st.session_state["role"] = role
 
                     log_security_event(username, role, "login", "SUCCESS", f"User {customer_name} connected")
-                    st.success(f"Bienvenue {customer_name} ({role}) !")
+                    st.success(f"Welcome {customer_name} ({role}) !")
                     st.rerun()
                 else:
                     log_security_event(username, "UNKNOWN", "login", "FAILED", f"Échec de connexion")
