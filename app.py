@@ -72,6 +72,26 @@ TRANSLATIONS = {
         "spinner": "Analyzing...",
         "sql_agent_label": "SQL Agent",
         "bi_label": "BI Analytics",
+        "suggestions_title": "Suggested questions",
+        "suggestions": {
+            "user": [
+                "How many orders have I placed?",
+                "What is my total spending?",
+                "Which region did I order from most?",
+            ],
+            "analyst": [
+                "Top 5 countries by sales",
+                "Profit by category",
+                "Which products lose the most money?",
+                "Average shipping delay by region",
+            ],
+            "admin": [
+                "Top 5 countries by sales",
+                "Profit by category",
+                "Which products lose the most money?",
+                "How many customers per segment?",
+            ],
+        },
     },
     "FR": {
         "sql_active": "Actif (Gemini)",
@@ -96,6 +116,26 @@ TRANSLATIONS = {
         "spinner": "Analyse en cours...",
         "sql_agent_label": "Agent SQL",
         "bi_label": "BI Analytics",
+        "suggestions_title": "Questions suggérées",
+        "suggestions": {
+            "user": [
+                "Combien de commandes ai-je passées ?",
+                "Quel est le total de mes dépenses ?",
+                "Quelle était ma dernière commande ?",
+            ],
+            "analyst": [
+                "Top 5 des pays par ventes",
+                "Profit par catégorie",
+                "Quels produits perdent le plus d'argent ?",
+                "Délai de livraison moyen par région",
+            ],
+            "admin": [
+                "Top 5 des pays par ventes",
+                "Profit par catégorie",
+                "Quels produits perdent le plus d'argent ?",
+                "Combien de clients par segment ?",
+            ],
+        },
     }
 }
 
@@ -184,6 +224,24 @@ div[data-testid="stSegmentedControl"] button[aria-checked="true"] {
 
 /* ---- Expander (SQL detail) ---- */
 [data-testid="stExpander"] { border-radius: 12px; border: 1px solid #e5e7eb; overflow: hidden; }
+            
+/* ---- Suggestions en bulles ---- */
+.st-key-chips .stButton > button {
+    border-radius: 999px !important;
+    padding: 6px 18px !important;
+    font-size: 0.85rem !important;
+    font-weight: 500 !important;
+    border: 1px solid #e0e7ff !important;
+    background: #ffffff !important;
+    color: #4f46e5 !important;
+    transition: all 0.2s ease !important;
+    white-space: nowrap;
+}
+.st-key-chips .stButton > button:hover {
+    background: #eef2ff !important;
+    border-color: #c7d2fe !important;
+    transform: translateY(-1px);
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -202,7 +260,9 @@ current_name = st.session_state.get("customer_name", "User")
 
 if not current_user or not user_role:
     st.error("Invalid session. Please log in again.")
-    st.session_state["authenticated"] = False
+    for _k in ("authenticated", "username", "role", "customer_name",
+               "messages", "chat_owner", "security_violations"):
+        st.session_state.pop(_k, None)
     st.stop()
 
 BI_ALLOWED_ROLES = ("admin", "analyst")
@@ -287,12 +347,29 @@ def status_row(icon_svg, label, value, active: bool):
     )
 
 
-def ask_agent(agent, question, role):
-    """Call agent.ask(), passing `role` only if the method accepts it."""
+def ask_agent(agent, question, role, customer_id):
+    """Call agent.ask() with whatever arguments its signature supports."""
     params = inspect.signature(agent.ask).parameters
+    kwargs = {}
     if "role" in params:
-        return agent.ask(question, role=role)
-    return agent.ask(question)
+        kwargs["role"] = role
+    if "customer_id" in params:
+        kwargs["customer_id"] = customer_id
+    return agent.ask(question, **kwargs)
+
+
+# Clés de session propres à un utilisateur : elles ne doivent JAMAIS
+# survivre à un changement de compte (fuite d'historique inter-sessions).
+USER_SESSION_KEYS = (
+    "authenticated", "username", "role", "customer_name",
+    "messages", "chat_owner", "security_violations",
+)
+
+
+def purge_user_session():
+    """Efface toute trace de l'utilisateur courant."""
+    for key in USER_SESSION_KEYS:
+        st.session_state.pop(key, None)
 
 
 # ============================================================
@@ -339,7 +416,7 @@ with st.sidebar:
 
     if st.button(lang["logout"], use_container_width=True):
         log_security_event(current_user, user_role, "logout", "SUCCESS", "Voluntary disconnection")
-        st.session_state["authenticated"] = False
+        purge_user_session()
         st.rerun()
 
 
@@ -416,6 +493,12 @@ def render_assistant_message(message: dict):
 # ============================================================
 #  CHAT
 # ============================================================
+# SÉCURITÉ : l'historique appartient à un utilisateur. Si le compte connecté
+# change (ou si la purge a échoué), on repart d'une conversation vierge.
+if st.session_state.get("chat_owner") != current_user:
+    st.session_state["messages"] = [{"role": "assistant", "content": lang["welcome"]}]
+    st.session_state["chat_owner"] = current_user
+
 if "messages" not in st.session_state:
     st.session_state.messages = [
         {"role": "assistant", "content": lang["welcome"]}
@@ -432,7 +515,26 @@ for message in st.session_state.messages:
         else:
             st.markdown(message["content"])
 
-if user_query := st.chat_input(lang["chat_placeholder"]):
+# ============================================================
+#  QUESTIONS SUGGÉRÉES — adaptées aux autorisations du rôle
+# ============================================================
+pending_query = None
+
+# Chaque rôle ne se voit proposer que des questions qu'il a le droit de poser.
+role_suggestions = lang["suggestions"].get(user_role, [])
+
+if len(st.session_state.messages) <= 1 and role_suggestions:
+    st.caption(lang["suggestions_title"])
+    with st.container(key="chips"):
+        for question in role_suggestions:
+            if st.button(question, key=f"sugg_{question}"):
+                pending_query = question
+
+
+typed_query = st.chat_input(lang["chat_placeholder"])
+user_query = pending_query or typed_query
+
+if user_query:
     with st.chat_message("user"):
         st.markdown(user_query)
     st.session_state.messages.append({"role": "user", "content": user_query})
@@ -444,7 +546,7 @@ if user_query := st.chat_input(lang["chat_placeholder"]):
         with st.chat_message("assistant"):
             if should_ban:
                 st.error("CRITICAL WARNING: Security threshold exceeded. Your session has been terminated due to suspicious activities.")
-                st.session_state["authenticated"] = False
+                purge_user_session()
                 st.stop()
             else:
                 alert_msg = (
@@ -464,11 +566,13 @@ if user_query := st.chat_input(lang["chat_placeholder"]):
                 if not MODULES_AVAILABLE or engine is None:
                     assistant_message["content"] = "The chatbot core engine is currently unavailable."
 
-                elif sql_agent is not None and user_role != "user":
+                elif sql_agent is not None:
                     try:
                         # La reformulation est localisée ; le SQL reste en anglais.
+                        # Pour un `user`, l'agent interroge des vues filtrées sur
+                        # son propre customer_id (username == customer_id).
                         localized_query = f"{user_query} (Reply strictly in {selected_lang})"
-                        outcome = ask_agent(sql_agent, user_query, user_role)
+                        outcome = ask_agent(sql_agent, user_query, user_role, current_user)
 
                         if outcome["error"]:
                             assistant_message["content"] = outcome["error"]
@@ -494,7 +598,7 @@ if user_query := st.chat_input(lang["chat_placeholder"]):
 
             if st.session_state.get("security_violations", 0) >= 3:
                 st.error("CRITICAL WARNING: Security threshold exceeded. Your session has been terminated due to suspicious activities.")
-                st.session_state["authenticated"] = False
+                purge_user_session()
                 st.stop()
             else:
                 render_assistant_message(assistant_message)
