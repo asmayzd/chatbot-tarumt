@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import sys
 import os
+import inspect
 import configparser
 
 # Intégration des tables SQL
@@ -24,11 +25,17 @@ sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 from src.security.auth import render_login_form
 from src.security.logger import log_security_event
 from src.security.guardrails import (
-    detect_prompt_injection, 
-    handle_security_violation, 
-    get_secured_dataframe, 
+    detect_prompt_injection,
+    handle_security_violation,
+    get_secured_dataframe,
     check_sql_outcome_security,
-    detect_cross_user_violation
+    detect_cross_user_violation,
+)
+
+# --- Jeu d'icônes vectorielles (Lucide) ---
+from src.bi_analytics.icon import (
+    ICON_SALES, ICON_PROFIT, ICON_ANOMALY,
+    ICON_USER, ICON_DATABASE, ICON_CHART, ICON_LOCK, ICON_BOT,
 )
 
 # Page Configuration
@@ -43,12 +50,12 @@ st.set_page_config(
 # ============================================================
 TRANSLATIONS = {
     "EN": {
-        "sql_active": "🟢 Active (Gemini)",
-        "sql_inactive": "🔴 Inactive",
-        "bi_granted": "🟢 Access Granted",
-        "bi_locked": "🔒 Restricted (analyst / admin)",
+        "sql_active": "Active (Gemini)",
+        "sql_inactive": "Inactive",
+        "bi_granted": "Access granted",
+        "bi_locked": "Restricted (analyst / admin)",
         "security_warn": "Security Warnings",
-        "logout": "🚪 Log out",
+        "logout": "Log out",
         "hero_desc": "Ask your questions about sales, profits, and delivery times in natural language.",
         "connected": "Connected",
         "sales_sub": "global turnover",
@@ -58,19 +65,21 @@ TRANSLATIONS = {
         "anomaly_expander": "View financial anomaly details",
         "anomaly_sales": "High sales with negative profit",
         "anomaly_disc": "High discount with negative profit",
-        "bi_restricted_info": "🔒 The BI Analytics Dashboard is reserved for **analyst** and **admin** roles. However, you can still ask your questions to the assistant below.",
-        "sql_expander": "🔍 Details — SQL query used",
+        "bi_restricted_info": "The BI Analytics Dashboard is reserved for **analyst** and **admin** roles. However, you can still ask your questions to the assistant below.",
+        "sql_expander": "Details — SQL query used",
         "welcome": "Hello! I am your TARUMT data assistant. Try asking: 'Top 5 countries by sales' or 'profit by category'.",
         "chat_placeholder": "Type your question here...",
-        "spinner": "Analyzing..."
+        "spinner": "Analyzing...",
+        "sql_agent_label": "SQL Agent",
+        "bi_label": "BI Analytics",
     },
     "FR": {
-        "sql_active": "🟢 Actif (Gemini)",
-        "sql_inactive": "🔴 Inactif",
-        "bi_granted": "🟢 Accès Autorisé",
-        "bi_locked": "🔒 Réservé (analyst / admin)",
+        "sql_active": "Actif (Gemini)",
+        "sql_inactive": "Inactif",
+        "bi_granted": "Accès autorisé",
+        "bi_locked": "Réservé (analyst / admin)",
         "security_warn": "Avertissements de Sécurité",
-        "logout": "🚪 Se déconnecter",
+        "logout": "Se déconnecter",
         "hero_desc": "Posez vos questions sur les ventes, les profits et les délais de livraison en langage naturel.",
         "connected": "Connecté",
         "sales_sub": "chiffre d'affaires global",
@@ -80,11 +89,13 @@ TRANSLATIONS = {
         "anomaly_expander": "Voir le détail des anomalies financières",
         "anomaly_sales": "Ventes élevées avec profit négatif",
         "anomaly_disc": "Remises élevées avec profit négatif",
-        "bi_restricted_info": "🔒 Le tableau de bord BI Analytics est réservé aux rôles **analyst** et **admin**. Vous pouvez néanmoins poser vos questions à l'assistant ci-dessous.",
-        "sql_expander": "🔍 Détails — requête SQL utilisée",
+        "bi_restricted_info": "Le tableau de bord BI Analytics est réservé aux rôles **analyst** et **admin**. Vous pouvez néanmoins poser vos questions à l'assistant ci-dessous.",
+        "sql_expander": "Détails — requête SQL utilisée",
         "welcome": "Bonjour ! Je suis votre assistant data TARUMT. Essayez par exemple : 'Top 5 des pays par ventes' ou 'profit par catégorie'.",
         "chat_placeholder": "Posez votre question ici...",
-        "spinner": "Analyse en cours..."
+        "spinner": "Analyse en cours...",
+        "sql_agent_label": "Agent SQL",
+        "bi_label": "BI Analytics",
     }
 }
 
@@ -111,7 +122,8 @@ html, body, [class*="css"], .stApp {
     box-shadow: 0 12px 30px rgba(79,70,229,0.25);
     margin-bottom: 22px;
 }
-.hero h1 { margin: 0; font-size: 1.7rem; font-weight: 800; letter-spacing: -0.02em; }
+.hero-title { display: flex; align-items: center; gap: 12px; }
+.hero-title h1 { margin: 0; font-size: 1.7rem; font-weight: 800; letter-spacing: -0.02em; }
 .hero p  { margin: 6px 0 0; opacity: 0.9; font-size: 0.95rem; }
 .role-badge {
     display: inline-block; margin-top: 12px; padding: 4px 14px;
@@ -127,8 +139,9 @@ html, body, [class*="css"], .stApp {
 }
 .kpi-icon {
     width: 44px; height: 44px; border-radius: 12px; display: flex;
-    align-items: center; justify-content: center; font-size: 1.3rem; margin-bottom: 12px;
+    align-items: center; justify-content: center; margin-bottom: 12px;
 }
+.kpi-icon svg { display: block; }
 .kpi-label { color: #6b7280; font-size: 0.82rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
 .kpi-value { color: #111827; font-size: 1.7rem; font-weight: 800; margin-top: 2px; letter-spacing: -0.02em; }
 .kpi-sub   { color: #9ca3af; font-size: 0.78rem; margin-top: 4px; }
@@ -139,25 +152,38 @@ section[data-testid="stSidebar"] {
 }
 .profile-card {
     background: linear-gradient(135deg, #eef2ff 0%, #f5f3ff 100%);
-    border: 1px solid #e0e7ff; border-radius: 14px; padding: 14px 16px; margin-bottom: 8px;
+    border: 1px solid #e0e7ff; border-radius: 14px; padding: 14px 16px; margin-bottom: 12px;
 }
-.profile-name { font-weight: 700; color: #4338ca; font-size: 0.95rem; }
-.profile-role { color: #6d28d9; font-size: 0.78rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+.profile-head { display: flex; align-items: center; gap: 9px; color: #4338ca; }
+.profile-name { font-weight: 700; font-size: 0.95rem; }
+.profile-role { color: #6d28d9; font-size: 0.78rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin-top: 3px; }
+.status-row {
+    display: flex; align-items: center; gap: 9px;
+    color: #6b7280; font-size: 0.8rem; margin: 7px 0;
+}
+.status-row svg { flex-shrink: 0; }
+.dot { width: 7px; height: 7px; border-radius: 50%; margin-left: auto; }
+
+/* ---- Sélecteur de langue : pastille arrondie ---- */
+div[data-testid="stSegmentedControl"] button {
+    border-radius: 999px !important;
+    transition: all 0.25s ease !important;
+    padding: 6px 24px !important;
+}
+div[data-testid="stSegmentedControl"] button[aria-checked="true"] {
+    background: #e0e7ff !important;
+    color: #4f46e5 !important;
+    font-weight: 600 !important;
+}
 
 /* ---- Chat bubbles ---- */
-.stChatMessage {
-    border-radius: 16px; padding: 4px 6px;
-}
+.stChatMessage { border-radius: 16px; padding: 4px 6px; }
 
 /* ---- Buttons ---- */
-.stButton > button {
-    border-radius: 10px; font-weight: 600; border: 1px solid #e5e7eb;
-}
+.stButton > button { border-radius: 10px; font-weight: 600; border: 1px solid #e5e7eb; }
 
 /* ---- Expander (SQL detail) ---- */
-[data-testid="stExpander"] {
-    border-radius: 12px; border: 1px solid #e5e7eb; overflow: hidden;
-}
+[data-testid="stExpander"] { border-radius: 12px; border: 1px solid #e5e7eb; overflow: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -169,9 +195,15 @@ if not st.session_state["authenticated"]:
     render_login_form()
     st.stop()
 
-current_user = st.session_state["username"]
+# Lecture defensive : ne jamais supposer qu'une session est complete
+current_user = st.session_state.get("username")
+user_role = st.session_state.get("role")
 current_name = st.session_state.get("customer_name", "User")
-user_role = st.session_state["role"]
+
+if not current_user or not user_role:
+    st.error("Invalid session. Please log in again.")
+    st.session_state["authenticated"] = False
+    st.stop()
 
 BI_ALLOWED_ROLES = ("admin", "analyst")
 can_view_bi = user_role in BI_ALLOWED_ROLES
@@ -199,6 +231,7 @@ if "GEMINI_API_KEY" in os.environ:
     except ImportError:
         pass
 
+
 # --- Cached Components Initialisation ---
 @st.cache_resource
 def init_components():
@@ -219,21 +252,24 @@ def init_components():
 
     return kpi, anomaly, sql_agent, df_clean
 
+
+engine = None
 if MODULES_AVAILABLE:
     kpi_analyzer, anomaly_detector, sql_agent, df_clean = init_components()
-    
+
     # --- CYBERSECURITE : RLS Filtrage dynamique par ID de session ---
     secured_df = get_secured_dataframe(df_clean, user_role, current_user)
     engine = ChatbotEngine(secured_df)
 else:
+    kpi_analyzer = anomaly_detector = sql_agent = df_clean = None
     st.error(f"Failed to import project modules: {IMPORT_ERROR}")
 
 
-def kpi_card(icon, label, value, accent_bg, accent_fg, sub=""):
-    """Return the HTML for a modern KPI card."""
+def kpi_card(icon_svg, label, value, accent_bg, accent_fg, sub=""):
+    """Return the HTML for a modern KPI card (icon = inline SVG)."""
     return f"""
     <div class="kpi-card">
-        <div class="kpi-icon" style="background:{accent_bg};color:{accent_fg};">{icon}</div>
+        <div class="kpi-icon" style="background:{accent_bg};color:{accent_fg};">{icon_svg}</div>
         <div class="kpi-label">{label}</div>
         <div class="kpi-value">{value}</div>
         <div class="kpi-sub">{sub}</div>
@@ -241,41 +277,69 @@ def kpi_card(icon, label, value, accent_bg, accent_fg, sub=""):
     """
 
 
+def status_row(icon_svg, label, value, active: bool):
+    """One status line in the sidebar, with a coloured dot."""
+    dot = "#16a34a" if active else "#dc2626"
+    return (
+        f'<div class="status-row">{icon_svg}'
+        f'<span>{label}: {value}</span>'
+        f'<span class="dot" style="background:{dot};"></span></div>'
+    )
+
+
+def ask_agent(agent, question, role):
+    """Call agent.ask(), passing `role` only if the method accepts it."""
+    params = inspect.signature(agent.ask).parameters
+    if "role" in params:
+        return agent.ask(question, role=role)
+    return agent.ask(question)
+
+
 # ============================================================
 #  SIDEBAR
 # ============================================================
 with st.sidebar:
-    # Sélecteur de langue minimal et efficace
-    selected_lang = st.selectbox("🌐 Language / Langue", ["EN", "FR"], index=0)
+    selected_lang = st.segmented_control(
+        "Language / Langue",
+        options=["EN", "FR"],
+        default="EN",
+    )
+    if not selected_lang:
+        selected_lang = "EN"
+
     lang = TRANSLATIONS[selected_lang]
 
-    st.write("")
     st.markdown(
         f'<div class="profile-card">'
-        f'<div class="profile-name">👤 {current_name}</div>'
-        f'<div class="profile-role">{user_role} ({current_user})</div>'
+        f'<div class="profile-head">{ICON_USER}<span class="profile-name">{current_name}</span></div>'
+        f'<div class="profile-role">{user_role}</div>'
         f'</div>',
         unsafe_allow_html=True
     )
 
-    st.caption(f"🤖 SQL Agent: {lang['sql_active'] if (MODULES_AVAILABLE and sql_agent) else lang['sql_inactive']}")
-
-    if can_view_bi:
-        st.caption(f"📊 BI Analytics: {lang['bi_granted']}")
-    else:
-        st.caption(f"📊 BI Analytics: {lang['bi_locked']}")
-
-    # Récupération propre du compteur de violations
-    violations_count = st.session_state.get("security_violations", 0)
-    if violations_count > 0:
-        st.markdown(f"⚠️ **{lang['security_warn']}:** `{violations_count}/3`")
+    agent_on = bool(MODULES_AVAILABLE and sql_agent)
+    st.markdown(
+        status_row(
+            ICON_DATABASE, lang["sql_agent_label"],
+            lang["sql_active"] if agent_on else lang["sql_inactive"],
+            agent_on
+        ),
+        unsafe_allow_html=True
+    )
+    st.markdown(
+        status_row(
+            ICON_CHART if can_view_bi else ICON_LOCK, lang["bi_label"],
+            lang["bi_granted"] if can_view_bi else lang["bi_locked"],
+            can_view_bi
+        ),
+        unsafe_allow_html=True
+    )
 
     st.write("---")
 
     if st.button(lang["logout"], use_container_width=True):
         log_security_event(current_user, user_role, "logout", "SUCCESS", "Voluntary disconnection")
         st.session_state["authenticated"] = False
-        st.session_state["security_violations"] = 0
         st.rerun()
 
 
@@ -285,7 +349,7 @@ with st.sidebar:
 st.markdown(
     f"""
     <div class="hero">
-        <h1>🤖 TARUMT Smart Assistant</h1>
+        <div class="hero-title">{ICON_BOT}<h1>TARUMT Smart Assistant</h1></div>
         <p>{lang['hero_desc']}</p>
         <span class="role-badge">{lang['connected']}: {current_name} — {user_role}</span>
     </div>
@@ -313,15 +377,15 @@ if MODULES_AVAILABLE and kpi_analyzer is not None and can_view_bi:
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.markdown(kpi_card("💰", "Total Sales", f"${total_sales:,.0f}",
+        st.markdown(kpi_card(ICON_SALES, "Total Sales", f"${total_sales:,.0f}",
                              "#e0e7ff", "#4f46e5", lang["sales_sub"]),
                     unsafe_allow_html=True)
     with c2:
-        st.markdown(kpi_card("📈", "Total Profit", f"${total_profit:,.0f}",
+        st.markdown(kpi_card(ICON_PROFIT, "Total Profit", f"${total_profit:,.0f}",
                              "#dcfce7", "#16a34a", lang["profit_sub"]),
                     unsafe_allow_html=True)
     with c3:
-        st.markdown(kpi_card("🚨", "Anomalies", f"{nb_anomalies}",
+        st.markdown(kpi_card(ICON_ANOMALY, "Anomalies", f"{nb_anomalies}",
                              anomaly_bg, anomaly_fg, anomaly_sub),
                     unsafe_allow_html=True)
 
@@ -342,7 +406,7 @@ elif MODULES_AVAILABLE and not can_view_bi:
 def render_assistant_message(message: dict):
     st.markdown(message["content"])
     if message.get("sql"):
-        with st.expander(lang["sql_expander"]):
+        with st.expander(lang["sql_expander"], icon=":material/code:"):
             st.code(message["sql"], language="sql")
             result = message.get("result")
             if result is not None and not result.empty:
@@ -357,7 +421,7 @@ if "messages" not in st.session_state:
         {"role": "assistant", "content": lang["welcome"]}
     ]
 
-# Ajuste dynamiquement la langue du premier message d'accueil si l'historique contient uniquement ce message
+# Ajuste dynamiquement la langue du message d'accueil si l'historique ne contient que lui
 if len(st.session_state.messages) == 1 and st.session_state.messages[0]["role"] == "assistant":
     st.session_state.messages[0]["content"] = lang["welcome"]
 
@@ -373,20 +437,23 @@ if user_query := st.chat_input(lang["chat_placeholder"]):
         st.markdown(user_query)
     st.session_state.messages.append({"role": "user", "content": user_query})
 
-    # --- SÉCURITÉ MODULAIRE : Interception Prompt Injection OU Usurpation d'identité ---
+    # --- SÉCURITÉ MODULAIRE : Prompt Injection OU Usurpation d'identité ---
     if detect_prompt_injection(user_query) or detect_cross_user_violation(user_query, current_name, user_role):
         should_ban = handle_security_violation(current_user, user_role, user_query)
-        
+
         with st.chat_message("assistant"):
             if should_ban:
-                st.error("🚨 CRITICAL WARNING: Security threshold exceeded. Your session has been terminated due to suspicious activities.")
+                st.error("CRITICAL WARNING: Security threshold exceeded. Your session has been terminated due to suspicious activities.")
                 st.session_state["authenticated"] = False
                 st.stop()
             else:
-                alert_msg = f"⚠️ Security Alert: Unauthorized data access pattern detected. Action rejected. (Warning {st.session_state['security_violations']}/3)"
+                alert_msg = (
+                    "Security Alert: Unauthorized data access pattern detected. "
+                    f"Action rejected. (Warning {st.session_state['security_violations']}/3)"
+                )
                 st.warning(alert_msg)
                 st.session_state.messages.append({"role": "assistant", "content": alert_msg})
-                
+
     else:
         log_security_event(current_user, user_role, "ask_chatbot", "ALLOWED", f"Query: {user_query}")
 
@@ -399,16 +466,15 @@ if user_query := st.chat_input(lang["chat_placeholder"]):
 
                 elif sql_agent is not None and user_role != "user":
                     try:
-                        # Demander explicitement à l'agent de générer l'analyse dans la langue sélectionnée
-                        localized_query = user_query + f" (Reply strictly in {selected_lang})"
-                        outcome = sql_agent.ask(user_query, role=user_role)
-                        
+                        # La reformulation est localisée ; le SQL reste en anglais.
+                        localized_query = f"{user_query} (Reply strictly in {selected_lang})"
+                        outcome = ask_agent(sql_agent, user_query, user_role)
+
                         if outcome["error"]:
                             assistant_message["content"] = outcome["error"]
                             assistant_message["sql"] = outcome["sql"]
                             log_security_event(current_user, user_role, "sql_query", "REJECTED", f"Reason: {outcome['error']}")
-                            
-                            should_ban = check_sql_outcome_security(outcome["error"], current_user, user_role, user_query)
+                            check_sql_outcome_security(outcome["error"], current_user, user_role, user_query)
                         else:
                             answer = sql_agent.explain_result(localized_query, outcome["result"])
                             assistant_message["content"] = answer
@@ -421,17 +487,15 @@ if user_query := st.chat_input(lang["chat_placeholder"]):
                 else:
                     try:
                         assistant_message["content"] = engine.answer(user_query)
-                        log_security_event(current_user, user_role, "local_engine_query", "EXECUTED", f"Query processed by secured fallback engine")
+                        log_security_event(current_user, user_role, "local_engine_query", "EXECUTED",
+                                           "Query processed by secured fallback engine")
                     except Exception as e:
                         assistant_message["content"] = f"An error occurred during calculation: {str(e)}"
 
             if st.session_state.get("security_violations", 0) >= 3:
-                st.error("🚨 CRITICAL WARNING: Security threshold exceeded. Your session has been terminated due to suspicious activities.")
+                st.error("CRITICAL WARNING: Security threshold exceeded. Your session has been terminated due to suspicious activities.")
                 st.session_state["authenticated"] = False
                 st.stop()
             else:
                 render_assistant_message(assistant_message)
                 st.session_state.messages.append(assistant_message)
-            
-            if st.session_state.get("security_violations", 0) >= 3:
-                st.rerun()
