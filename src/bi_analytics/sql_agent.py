@@ -38,7 +38,7 @@ class SQLAgent:
     PII_COLUMNS = ["customer_name"]
 
     def __init__(self, db_path: str = "data/superstore_bi.db",
-                 model: str = "gemini-3.5-flash"):
+                 model: str = "gemini-3.1-flash-lite"):
         self.db_path = db_path
         self.model = model
         self.connection = None
