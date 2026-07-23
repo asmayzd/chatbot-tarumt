@@ -27,6 +27,11 @@ def check_and_auto_ingest():
         else:
             print(f"✅ Base de données PostgreSQL déjà opérationnelle ({count} clients détectés). Pas d'ingestion nécessaire.")
 
+        # Provisionne les comptes admin/analyst et les comptes clients manquants
+        # (idempotent : ne recrée jamais un compte déjà existant).
+        from src.database.seed_users import seed_default_accounts
+        seed_default_accounts()
+
     except Exception as e:
         print(f"⚠️ Erreur lors de la vérification/ingestion automatique : {str(e)}")
 

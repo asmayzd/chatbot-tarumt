@@ -29,9 +29,12 @@ if os.path.exists("config.ini"):
 
 # --- Existing project logic (unchanged, imported where it already lives) ---
 from src.database.db_manager import init_db, get_db_connection
+from src.database import chat_history
 from src.security.auth import verify_credentials
 from src.security.logger import log_security_event
 from src.security.guardrails import detect_prompt_injection, detect_cross_user_violation
+from src.security import ai_guardrails
+from src.security import security_dashboard
 from src.data_science.data_cleaner import DataCleaner
 from src.bi_analytics.kpi_analyzer import KPIAnalyzer
 from src.bi_analytics.anomaly_detector import AnomalyDetector
@@ -90,6 +93,21 @@ def get_session(token: str) -> dict:
     return session
 
 
+def _ensure_session_owner(user_id: int, chat_session_id: int):
+    """Raise 404 if chat_session_id doesn't belong to user_id (no cross-user reads)."""
+    owned_ids = {s["session_id"] for s in chat_history.list_sessions(user_id)}
+    if chat_session_id not in owned_ids:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+
+
+def _require_admin(token: str) -> dict:
+    """Resolve the session for `token` and raise 403 unless it's an admin."""
+    session = get_session(token)
+    if session["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Reserved for the admin role.")
+    return session
+
+
 # ==========================================================================
 #  Heavy singletons: loaded once at startup, shared across requests
 # ==========================================================================
@@ -104,6 +122,11 @@ def load_components():
     global KPI, ANOMALY, AGENT
 
     init_db()
+
+    # Provisionne les comptes admin/analyst et les comptes clients manquants
+    # (idempotent : ne recrée jamais un compte déjà existant).
+    from src.database.seed_users import seed_default_accounts
+    seed_default_accounts()
 
     # --- Connexion à PostgreSQL & Récupération dynamique des données ---
     conn = get_db_connection()
@@ -143,6 +166,15 @@ class LoginRequest(BaseModel):
 
 class AskRequest(BaseModel):
     question: str
+    session_id: int | None = None
+
+
+class CreateSessionRequest(BaseModel):
+    session_name: str | None = None
+
+
+class RenameSessionRequest(BaseModel):
+    session_name: str
 
 
 # ==========================================================================
@@ -151,7 +183,7 @@ class AskRequest(BaseModel):
 @app.post("/login")
 def login(body: LoginRequest):
     """Authenticate and return a session token."""
-    role, customer_name = verify_credentials(body.username, body.password)
+    role, customer_name, user_id = verify_credentials(body.username, body.password)
 
     if not role:
         log_security_event(body.username, "UNKNOWN", "login", "FAILED", "Bad credentials")
@@ -162,6 +194,7 @@ def login(body: LoginRequest):
         "username": body.username,
         "role": role,
         "customer_name": customer_name,
+        "user_id": user_id,
         "violations": 0,
     }
     log_security_event(body.username, role, "login", "SUCCESS", "API login")
@@ -206,6 +239,75 @@ def suggestions(authorization: str = Header(None)):
     return {"suggestions": SUGGESTIONS.get(session["role"], [])}
 
 
+@app.get("/sessions")
+def get_sessions(authorization: str = Header(None)):
+    """List the current user's chat conversations, most recent first."""
+    token = (authorization or "").replace("Bearer ", "")
+    session = get_session(token)
+    return {"sessions": chat_history.list_sessions(session["user_id"])}
+
+
+@app.post("/sessions")
+def create_chat_session(body: CreateSessionRequest, authorization: str = Header(None)):
+    """Start a new, empty conversation for the current user."""
+    token = (authorization or "").replace("Bearer ", "")
+    session = get_session(token)
+    name = body.session_name or chat_history.DEFAULT_SESSION_NAME
+    session_id = chat_history.create_session(session["user_id"], name)
+    return {"session_id": session_id, "session_name": name}
+
+
+@app.get("/sessions/{chat_session_id}/messages")
+def get_chat_session_messages(chat_session_id: int, authorization: str = Header(None)):
+    """Load the full message history of one of the current user's conversations."""
+    token = (authorization or "").replace("Bearer ", "")
+    session = get_session(token)
+    _ensure_session_owner(session["user_id"], chat_session_id)
+    return {"messages": chat_history.load_messages(chat_session_id)}
+
+
+@app.patch("/sessions/{chat_session_id}")
+def rename_chat_session(chat_session_id: int, body: RenameSessionRequest, authorization: str = Header(None)):
+    token = (authorization or "").replace("Bearer ", "")
+    session = get_session(token)
+    _ensure_session_owner(session["user_id"], chat_session_id)
+    chat_history.rename_session(chat_session_id, body.session_name)
+    return {"ok": True}
+
+
+@app.delete("/sessions/{chat_session_id}")
+def delete_chat_session(chat_session_id: int, authorization: str = Header(None)):
+    token = (authorization or "").replace("Bearer ", "")
+    session = get_session(token)
+    _ensure_session_owner(session["user_id"], chat_session_id)
+    chat_history.delete_session(chat_session_id)
+    return {"ok": True}
+
+
+@app.get("/admin/security/overview")
+def admin_security_overview(authorization: str = Header(None)):
+    """KPIs + série temporelle (14j) pour le dashboard cybersécurité. Admin only."""
+    token = (authorization or "").replace("Bearer ", "")
+    _require_admin(token)
+    return security_dashboard.get_overview()
+
+
+@app.get("/admin/security/events")
+def admin_security_events(
+    limit: int = 100,
+    status: str | None = None,
+    action: str | None = None,
+    authorization: str = Header(None),
+):
+    """Derniers événements de sécurité (connexions, blocages, bannissements...). Admin only."""
+    token = (authorization or "").replace("Bearer ", "")
+    _require_admin(token)
+    limit = max(1, min(limit, 500))
+    status_list = status.split(",") if status else None
+    action_list = action.split(",") if action else None
+    return {"events": security_dashboard.get_events(limit=limit, status=status_list, action=action_list)}
+
+
 @app.get("/kpis")
 def kpis(authorization: str = Header(None)):
     """BI dashboard figures. Restricted to analyst / admin."""
@@ -237,27 +339,76 @@ def ask(body: AskRequest, authorization: str = Header(None)):
     username = session["username"]
     role = session["role"]
     customer_name = session["customer_name"]
+    user_id = session["user_id"]
     question = body.question.strip()
 
     if not question:
         raise HTTPException(status_code=400, detail="Empty question.")
 
-    # --- Security guardrails (prompt injection / impersonation) ---
-    if detect_prompt_injection(question) or detect_cross_user_violation(question, customer_name, role):
+    # --- Persistance : rattache la question à une conversation réelle. On en
+    # crée une nouvelle si le frontend n'en a pas encore (première question).
+    if body.session_id is not None:
+        _ensure_session_owner(user_id, body.session_id)
+        chat_session_id = body.session_id
+    else:
+        chat_session_id = chat_history.create_session(user_id)
+
+    is_first_message = chat_history.count_messages(chat_session_id) == 0
+    chat_history.append_message(chat_session_id, "user", question)
+    if is_first_message:
+        chat_history.rename_session(chat_session_id, question[:60])
+
+    def respond(content, sql=None, result=None, blocked=False, extra=None):
+        chat_history.append_message(chat_session_id, "assistant", content)
+        payload = {
+            "content": content,
+            "sql": sql,
+            "result": result,
+            "blocked": blocked,
+            "session_id": chat_session_id,
+        }
+        if extra:
+            payload.update(extra)
+        return payload
+
+    # --- Security guardrails ---
+    # Couche 1 : blacklist statique, instantanée, gratuite (patterns connus).
+    # Couche 2 : uniquement si la couche 1 n'a rien vu, Gemini juge la requête —
+    # utile contre les formulations inédites, sans avoir à enrichir la blacklist
+    # à la main à chaque nouvelle attaque.
+    blacklist_hit = detect_prompt_injection(question)
+    cross_user_hit = detect_cross_user_violation(question, customer_name, role)
+
+    ai_verdict = None
+    if not (blacklist_hit or cross_user_hit):
+        ai_verdict = ai_guardrails.classify_intent(question)
+
+    is_malicious = blacklist_hit or cross_user_hit or bool(ai_verdict and ai_verdict["malicious"])
+
+    if is_malicious:
+        if blacklist_hit:
+            category = "blacklist"
+        elif cross_user_hit:
+            category = "cross_user_violation"
+        else:
+            category = ai_verdict["category"]
+
         session["violations"] += 1
-        log_security_event(username, role, "security_violation", "BLOCKED", f"Payload: {question}")
+        log_security_event(
+            username, role, "security_violation", "BLOCKED",
+            f"[{category}] Payload: {question}"
+            + (f" | AI reason: {ai_verdict['reason']}" if ai_verdict and ai_verdict["malicious"] else ""),
+        )
 
         if session["violations"] >= 3:
             log_security_event(username, role, "user_session_ban", "CRITICAL", "Repeated violations")
             SESSIONS.pop(token, None)
             raise HTTPException(status_code=403, detail="Session terminated: security threshold exceeded.")
 
-        return {
-            "content": f"Security alert: request rejected. (Warning {session['violations']}/3)",
-            "sql": None,
-            "result": None,
-            "blocked": True,
-        }
+        return respond(
+            f"Security alert: request rejected. (Warning {session['violations']}/3)",
+            blocked=True,
+        )
 
     if AGENT is None:
         raise HTTPException(status_code=503, detail="SQL agent unavailable (no Gemini key).")
@@ -269,7 +420,7 @@ def ask(body: AskRequest, authorization: str = Header(None)):
 
     if outcome["error"]:
         log_security_event(username, role, "sql_query", "REJECTED", f"Reason: {outcome['error']}")
-        return {"content": outcome["error"], "sql": outcome["sql"], "result": None, "blocked": False}
+        return respond(outcome["error"], sql=outcome["sql"])
 
     answer = AGENT.explain_result(question, outcome["result"])
     log_security_event(username, role, "sql_query", "EXECUTED", f"SQL: {outcome['sql']}")
@@ -283,13 +434,10 @@ def ask(body: AskRequest, authorization: str = Header(None)):
         for row in records
     ]
 
-    return {
-        "content": answer,
-        "sql": outcome["sql"],
-        "result": records,
-        "cached": outcome.get("cached", False),
-        "blocked": False,
-    }
+    return respond(
+        answer, sql=outcome["sql"], result=records,
+        extra={"cached": outcome.get("cached", False)},
+    )
 
 
 @app.get("/")

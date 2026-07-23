@@ -1,51 +1,36 @@
-import hashlib
+import bcrypt
 import streamlit as st
+from src.database.db_manager import get_db_connection
 from src.security.logger import log_security_event
-
-# Base de données simulée (Customer ID / Username: {Mot de passe, Nom, Rôle})
-# Contient les 3 rôles de base et tes 3 clients réels issus du fichier superstore.csv
-USER_DB = {
-    "admin_tarumt": {
-        "password": hashlib.sha256("admin123".encode()).hexdigest(),
-        "customer_name": "Administrator",
-        "role": "admin"
-    },
-    "analyst_tarumt": {
-        "password": hashlib.sha256("analyst123".encode()).hexdigest(),
-        "customer_name": "Analyst BI",
-        "role": "analyst"
-    },
-    "user_tarumt": {
-        "password": hashlib.sha256("user123".encode()).hexdigest(),
-        "customer_name": "Generic User",
-        "role": "user"
-    },
-    # Nouveaux profils clients réels de ta base de données
-    "CS-121304": {
-        "password": hashlib.sha256("user123".encode()).hexdigest(),
-        "customer_name": "Chad Sievert",
-        "role": "user"
-    },
-    "AP-109154": {
-        "password": hashlib.sha256("user123".encode()).hexdigest(),
-        "customer_name": "Arthur Prichep",
-        "role": "user"
-    },
-    "JF-154904": {
-        "password": hashlib.sha256("user123".encode()).hexdigest(),
-        "customer_name": "Jeremy Farry",
-        "role": "user"
-    }
-}
 
 
 def verify_credentials(username, password):
-    """Vérifie la validité des identifiants entrés et retourne (role, customer_name)."""
-    if username in USER_DB:
-        hashed_password = hashlib.sha256(password.encode()).hexdigest()
-        if USER_DB[username]["password"] == hashed_password:
-            return USER_DB[username]["role"], USER_DB[username]["customer_name"]
-    return None, None
+    """Vérifie les identifiants contre la table app_users (mots de passe bcrypt).
+
+    Retourne (role, display_name, user_id) si valide, sinon (None, None, None).
+    Les identifiants ne sont plus jamais codés en dur dans le code source :
+    ils vivent uniquement en base, provisionnés par src.database.seed_users.
+    """
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT user_id, password_hash, role, display_name "
+            "FROM app_users WHERE username = %s;",
+            (username,),
+        )
+        row = cursor.fetchone()
+        cursor.close()
+    finally:
+        conn.close()
+
+    if not row:
+        return None, None, None
+
+    user_id, password_hash, role, display_name = row
+    if bcrypt.checkpw(password.encode(), password_hash.encode()):
+        return role, display_name, user_id
+    return None, None, None
 
 
 def render_login_form():
@@ -74,12 +59,13 @@ def render_login_form():
             submit = st.form_submit_button("Se connecter", use_container_width=True)
 
             if submit:
-                role, customer_name = verify_credentials(username, password)
+                role, customer_name, user_id = verify_credentials(username, password)
                 if role:
                     st.session_state["authenticated"] = True
                     st.session_state["username"] = username
                     st.session_state["customer_name"] = customer_name
                     st.session_state["role"] = role
+                    st.session_state["user_id"] = user_id
 
                     log_security_event(username, role, "login", "SUCCESS", f"User {customer_name} connected")
                     st.success(f"Welcome {customer_name} ({role}) !")
