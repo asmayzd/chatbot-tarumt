@@ -1,7 +1,7 @@
 """
 FastAPI backend for the TARUMT Smart Assistant.
 
-This exposes the existing project logic (SQL agent, KPIs, guardrails, auth)
+This exposes the existing project logic (SQL agent, KPIs, guardrails, auth, RAG)
 as a JSON API that a Vue frontend can call. No business logic lives here:
 this file only wires the existing `src/` modules to HTTP endpoints.
 
@@ -39,6 +39,7 @@ from src.data_science.data_cleaner import DataCleaner
 from src.bi_analytics.kpi_analyzer import KPIAnalyzer
 from src.bi_analytics.anomaly_detector import AnomalyDetector
 from src.bi_analytics.sql_agent import SQLAgent
+from src.data_science.rag_agent import RAGAgent
 
 
 # ==========================================================================
@@ -62,7 +63,8 @@ SUGGESTIONS = {
     "user": [
         "How many orders have I placed?",
         "What is my total spending?",
-        "Which region did I order from most?",
+        "What payment methods are accepted?",
+        "How long is the product warranty?",
     ],
     "analyst": [
         "Top 5 countries by sales",
@@ -74,7 +76,7 @@ SUGGESTIONS = {
         "Top 5 countries by sales",
         "Profit by category",
         "Which products lose the most money?",
-        "How many customers per segment?",
+        "What are the internal disciplinary rules?",
     ],
 }
 
@@ -114,12 +116,13 @@ def _require_admin(token: str) -> dict:
 KPI = None
 ANOMALY = None
 AGENT = None
+RAG_AGENT = None
 
 
 @app.on_event("startup")
 def load_components():
     """Load data and models once when the server starts directly from PostgreSQL."""
-    global KPI, ANOMALY, AGENT
+    global KPI, ANOMALY, AGENT, RAG_AGENT
 
     init_db()
 
@@ -151,9 +154,12 @@ def load_components():
     KPI = KPIAnalyzer(df_clean)
     ANOMALY = AnomalyDetector(df_clean)
 
-    # --- Configuration du SQLAgent (sur son fichier DB SQLite) ---
+    # --- Configuration du SQLAgent ---
     if "GEMINI_API_KEY" in os.environ:
         AGENT = SQLAgent(db_path="data/superstore_bi.db").setup()
+
+    # --- Configuration du RAGAgent ---
+    RAG_AGENT = RAGAgent(base_docs_dir="docs").init_gemini()
 
 
 # ==========================================================================
@@ -332,7 +338,7 @@ def kpis(authorization: str = Header(None)):
 
 @app.post("/ask")
 def ask(body: AskRequest, authorization: str = Header(None)):
-    """Main endpoint: natural-language question -> answer + SQL."""
+    """Main endpoint: natural-language question -> answer (RAG or SQL)."""
     token = (authorization or "").replace("Bearer ", "")
     session = get_session(token)
 
@@ -345,8 +351,7 @@ def ask(body: AskRequest, authorization: str = Header(None)):
     if not question:
         raise HTTPException(status_code=400, detail="Empty question.")
 
-    # --- Persistance : rattache la question à une conversation réelle. On en
-    # crée une nouvelle si le frontend n'en a pas encore (première question).
+    # --- Persistance : rattache la question à une conversation réelle ---
     if body.session_id is not None:
         _ensure_session_owner(user_id, body.session_id)
         chat_session_id = body.session_id
@@ -372,10 +377,6 @@ def ask(body: AskRequest, authorization: str = Header(None)):
         return payload
 
     # --- Security guardrails ---
-    # Couche 1 : blacklist statique, instantanée, gratuite (patterns connus).
-    # Couche 2 : uniquement si la couche 1 n'a rien vu, Gemini juge la requête —
-    # utile contre les formulations inédites, sans avoir à enrichir la blacklist
-    # à la main à chaque nouvelle attaque.
     blacklist_hit = detect_prompt_injection(question)
     cross_user_hit = detect_cross_user_violation(question, customer_name, role)
 
@@ -410,6 +411,34 @@ def ask(body: AskRequest, authorization: str = Header(None)):
             blocked=True,
         )
 
+    # --- ROUTAGE AUTOMATIQUE : RAG (Docs PDF) vs SQL Agent ---
+    rag_keywords = [
+        # Français
+        "paiement", "paye", "payer", "facture", "garantie", "sav", "retour", "retours",
+        "remboursement", "règlement", "interieur", "sanction", "faute", "alcool", "drogue",
+        "horaire", "retard", "sécurité", "harcèlement", "télétravail", "recyclage", "deee",
+        # Anglais
+        "payment", "pay", "invoice", "warranty", "guarantee", "return", "refund",
+        "policy", "rules", "regulation", "late", "delay", "security", "workplace"
+    ]
+
+    is_rag_query = any(kw in question.lower() for kw in rag_keywords)
+
+    if is_rag_query:
+        if RAG_AGENT is None:
+            raise HTTPException(status_code=503, detail="RAG agent unavailable.")
+
+        log_security_event(username, role, "ask_rag", "ALLOWED", f"Query: {question}")
+        rag_outcome = RAG_AGENT.query(question, role=role)
+
+        return respond(
+            rag_outcome["answer"],
+            sql=None,
+            result=None,
+            extra={"cached": False}
+        )
+
+    # --- TRAITEMENT SQL AGENT ---
     if AGENT is None:
         raise HTTPException(status_code=503, detail="SQL agent unavailable (no Gemini key).")
 
@@ -425,7 +454,6 @@ def ask(body: AskRequest, authorization: str = Header(None)):
     answer = AGENT.explain_result(question, outcome["result"])
     log_security_event(username, role, "sql_query", "EXECUTED", f"SQL: {outcome['sql']}")
 
-    # Convert numpy dtypes to native Python types so FastAPI can serialise them.
     records = outcome["result"].astype(object).where(
         outcome["result"].notna(), None
     ).to_dict(orient="records")
