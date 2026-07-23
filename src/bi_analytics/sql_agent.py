@@ -49,10 +49,36 @@ class SQLAgent:
     # Setup
     # ------------------------------------------------------------------
     def connect_database(self):
-        """Open a connection to the persistent database (Streamlit-safe)."""
-        self.connection = sqlite3.connect(self.db_path, check_same_thread=False)
-        self._build_anon_view()
-        return self
+        """Se connecte directement à PostgreSQL au lieu de SQLite."""
+        try:
+            import configparser
+            import os
+            import psycopg2
+
+            config = configparser.ConfigParser()
+            config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "config.ini"))
+            if not os.path.exists(config_path):
+                config_path = "config.ini"
+            config.read(config_path)
+
+            db_host = config.get("postgresql", "host", fallback="127.0.0.1")
+            db_port = config.get("postgresql", "port", fallback="5432")
+            db_name = config.get("postgresql", "database", fallback="postgres")
+            db_user = config.get("postgresql", "user", fallback="postgres")
+            db_pass = config.get("postgresql", "password", fallback="postgres")
+
+            self.connection = psycopg2.connect(
+                host=db_host,
+                port=db_port,
+                dbname=db_name,
+                user=db_user,
+                password=db_pass
+            )
+            print("✅ SQLAgent connecté à PostgreSQL avec succès !")
+            return self
+        except Exception as e:
+            print(f"❌ Erreur connexion PostgreSQL SQLAgent: {e}")
+            raise e
 
     def _build_anon_view(self):
         """Expose customer segments without the nominative column."""
@@ -129,28 +155,43 @@ class SQLAgent:
     # ------------------------------------------------------------------
     # Schema introspection
     # ------------------------------------------------------------------
-    def get_schema_description(self, role: str = "analyst") -> str:
-        """Describe only the tables/views this role is allowed to query."""
-        if self.connection is None:
-            raise ValueError("Database not connected.")
-
+    def get_schema_description(self, role: str = "admin") -> str:
+        """Retourne la description des tables adaptées à PostgreSQL ou SQLite."""
+        schema_desc = ""
+        tables = ["customers", "orders", "order_items", "products"]
         cursor = self.connection.cursor()
-        lines = []
 
-        for table in self._tables_for(role):
-            cursor.execute(f"PRAGMA table_info({table})")
-            columns = cursor.fetchall()
-            if not columns:
-                continue
+        for table in tables:
+            schema_desc += f"\nTable: {table}\nColumns:\n"
+            try:
+                # Tentative PostgreSQL (information_schema)
+                cursor.execute("""
+                    SELECT column_name, data_type 
+                    FROM information_schema.columns 
+                    WHERE table_name = %s;
+                """, (table,))
+                columns = cursor.fetchall()
 
-            cols = [f"{c[1]} ({c[2] or 'TEXT'})" for c in columns]
-            lines.append(f"Table {table}: " + ", ".join(cols))
+                if columns:
+                    for col in columns:
+                        schema_desc += f" - {col[0]} ({col[1]})\n"
+                else:
+                    # Fallback SQLite au cas où
+                    cursor.execute(f"PRAGMA table_info({table})")
+                    for col in cursor.fetchall():
+                        schema_desc += f" - {col[1]} ({col[2]})\n"
+            except Exception:
+                # En cas de rollback/erreur sur transaction PostgreSQL
+                self.connection.rollback()
+                try:
+                    cursor.execute(f"PRAGMA table_info({table})")
+                    for col in cursor.fetchall():
+                        schema_desc += f" - {col[1]} ({col[2]})\n"
+                except Exception:
+                    pass
 
-            cursor.execute(f"PRAGMA foreign_key_list({table})")
-            for fk in cursor.fetchall():
-                lines.append(f"  - {table}.{fk[3]} references {fk[2]}.{fk[4]}")
-
-        return "\n".join(lines)
+        cursor.close()
+        return schema_desc
 
     # ------------------------------------------------------------------
     # Prompting

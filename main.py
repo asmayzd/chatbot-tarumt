@@ -14,6 +14,7 @@ Interactive docs once running:
 import os
 import uuid
 import configparser
+import pandas as pd
 
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,11 +28,10 @@ if os.path.exists("config.ini"):
         os.environ["GEMINI_API_KEY"] = config["API_KEYS"]["GEMINI_API_KEY"]
 
 # --- Existing project logic (unchanged, imported where it already lives) ---
-from src.database.db_manager import init_db
+from src.database.db_manager import init_db, get_db_connection
 from src.security.auth import verify_credentials
 from src.security.logger import log_security_event
 from src.security.guardrails import detect_prompt_injection, detect_cross_user_violation
-from src.data_science.data_loader import DataLoader
 from src.data_science.data_cleaner import DataCleaner
 from src.bi_analytics.kpi_analyzer import KPIAnalyzer
 from src.bi_analytics.anomaly_detector import AnomalyDetector
@@ -78,10 +78,6 @@ SUGGESTIONS = {
 
 # ==========================================================================
 #  In-memory session store
-#
-#  There is no Streamlit session_state on the server side, so we keep a
-#  minimal token -> session map. A real deployment would use JWTs (Céline's
-#  area); this is a simple, replaceable placeholder to get the API running.
 # ==========================================================================
 SESSIONS = {}          # token -> {"username", "role", "customer_name", "violations"}
 
@@ -104,17 +100,35 @@ AGENT = None
 
 @app.on_event("startup")
 def load_components():
-    """Load data and models once when the server starts."""
+    """Load data and models once when the server starts directly from PostgreSQL."""
     global KPI, ANOMALY, AGENT
 
     init_db()
 
-    df = DataLoader(file_path="data/superstore.csv").load_csv()
+    # --- Connexion à PostgreSQL & Récupération dynamique des données ---
+    conn = get_db_connection()
+    try:
+        query = """
+            SELECT 
+                o.order_id, o.order_date, o.ship_date, o.ship_mode, o.customer_id,
+                c.customer_name, c.segment,
+                oi.sales, oi.quantity, oi.discount, oi.profit,
+                p.product_id, p.product_name, p.category, p.sub_category
+            FROM orders o
+            JOIN customers c ON o.customer_id = c.customer_id
+            JOIN order_items oi ON o.order_id = oi.order_id
+            JOIN products p ON oi.product_id = p.product_id;
+        """
+        df = pd.read_sql(query, conn)
+    finally:
+        conn.close()
+
     df_clean = DataCleaner(df).clean()
 
     KPI = KPIAnalyzer(df_clean)
     ANOMALY = AnomalyDetector(df_clean)
 
+    # --- Configuration du SQLAgent (sur son fichier DB SQLite) ---
     if "GEMINI_API_KEY" in os.environ:
         AGENT = SQLAgent(db_path="data/superstore_bi.db").setup()
 
