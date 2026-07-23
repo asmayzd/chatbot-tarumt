@@ -2,6 +2,7 @@
 import { ref, onMounted } from "vue";
 import { api } from "../services/api.js";
 import { ICONS } from "../components/Icons.js";
+import Mascot from "../components/Mascot.vue";
 
 const props = defineProps({ user: Object });
 const emit = defineEmits(["logout"]);
@@ -13,6 +14,51 @@ const messages = ref([
 ]);
 const input = ref("");
 const loading = ref(false);
+
+// État de la mascotte : idle / thinking / talking
+const mascotState = ref("idle");
+let talkTimer = null;
+
+// Effet machine à écrire
+const typing = ref(false);
+let typeTimer = null;
+
+/**
+ * Révèle le texte caractère par caractère.
+ * La vitesse s'adapte : une réponse longue s'écrit plus vite pour
+ * ne pas faire attendre l'utilisateur.
+ */
+function typeOut(message, fullText) {
+  return new Promise((resolve) => {
+    const speed = fullText.length > 260 ? 8 : 18;
+    let i = 0;
+    typing.value = true;
+
+    if (typeTimer) clearInterval(typeTimer);
+    typeTimer = setInterval(() => {
+      i += 1;
+      message.content = fullText.slice(0, i);
+      if (i >= fullText.length) {
+        clearInterval(typeTimer);
+        typeTimer = null;
+        typing.value = false;
+        resolve();
+      }
+    }, speed);
+  });
+}
+
+/** Un clic sur la bulle affiche immédiatement toute la réponse. */
+function skipTyping() {
+  if (!typing.value || !pendingFull) return;
+  if (typeTimer) clearInterval(typeTimer);
+  typeTimer = null;
+  pendingMessage.content = pendingFull;
+  typing.value = false;
+}
+
+let pendingMessage = null;
+let pendingFull = "";
 
 onMounted(async () => {
   if (props.user.can_view_bi) {
@@ -31,15 +77,40 @@ async function send(question) {
   messages.value.push({ role: "user", content: q });
   input.value = "";
   loading.value = true;
+  mascotState.value = "thinking";
+
+  let fullText;
+  let sql = null;
 
   try {
     const res = await api.ask(q);
-    messages.value.push({ role: "assistant", content: res.content, sql: res.sql });
+    fullText = res.content;
+    sql = res.sql;
   } catch (e) {
-    messages.value.push({ role: "assistant", content: "Error: " + e.message });
-  } finally {
-    loading.value = false;
+    fullText = "Error: " + e.message;
   }
+
+  loading.value = false;
+
+  // Bulle vide, puis le texte s'écrit dedans pendant que la mascotte parle.
+  messages.value.push({ role: "assistant", content: "", sql: null });
+
+  // IMPORTANT : on récupère la référence réactive renvoyée par le tableau.
+  // Muter l'objet brut poussé ci-dessus ne déclencherait aucun re-render.
+  const message = messages.value[messages.value.length - 1];
+  pendingMessage = message;
+  pendingFull = fullText;
+
+  mascotState.value = "talking";
+  if (talkTimer) clearTimeout(talkTimer);
+
+  await typeOut(message, fullText);
+
+  // Le détail SQL n'apparaît qu'une fois la phrase terminée.
+  message.sql = sql;
+  pendingMessage = null;
+  pendingFull = "";
+  mascotState.value = "idle";
 }
 
 async function logout() {
@@ -73,9 +144,12 @@ function money(v) {
     <!-- Main -->
     <main class="main">
       <div class="hero">
-        <h1><span class="ic-hero" v-html="ICONS.bot"></span> TARUMT Smart Assistant</h1>
-        <p>Ask about sales, profits and delivery times in natural language.</p>
-        <span class="badge">Connected: {{ user.customer_name }} — {{ user.role }}</span>
+        <div class="hero-text">
+          <h1>TARUMT Smart Assistant</h1>
+          <p>Ask about sales, profits and delivery times in natural language.</p>
+          <span class="badge">Connected: {{ user.customer_name }} — {{ user.role }}</span>
+        </div>
+        <Mascot :state="mascotState" :size="140" class="hero-mascot" />
       </div>
 
       <!-- KPI cards -->
@@ -103,8 +177,11 @@ function money(v) {
       <!-- Chat -->
       <div class="chat">
         <div v-for="(m, i) in messages" :key="i" :class="['msg', m.role]">
-          <div class="bubble">
-            {{ m.content }}
+          <div class="bubble" @click="skipTyping">
+            {{ m.content }}<span
+              v-if="typing && i === messages.length - 1"
+              class="caret"
+            ></span>
             <details v-if="m.sql" class="sql">
               <summary><span class="ic" v-html="ICONS.sql"></span> SQL query used</summary>
               <pre>{{ m.sql }}</pre>
@@ -129,51 +206,251 @@ function money(v) {
 </template>
 
 <style scoped>
-.layout { display: flex; min-height: 100vh; }
-.sidebar { width: 240px; background: #fff; border-right: 1px solid #eef0f6; padding: 20px; }
-.profile { background: #eef2ff; border: 1px solid #e0e7ff; border-radius: 14px; padding: 14px; }
-.name { font-weight: 700; color: #4338ca; }
-.role { color: #6d28d9; font-size: 0.78rem; text-transform: uppercase; font-weight: 600; margin-top: 4px; }
-.status { display: flex; justify-content: space-between; font-size: 0.82rem; margin: 18px 0; color: #6b7280; }
+/* ============================================================
+   LAYOUT
+   ============================================================ */
+.layout {
+  display: flex;
+  min-height: 100vh;
+  align-items: stretch;
+}
+
+.main {
+  flex: 1;
+  min-width: 0;              /* empêche le contenu de forcer un débordement */
+  padding: 26px;
+  max-width: 1000px;
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+
+/* ============================================================
+   SIDEBAR
+   ============================================================ */
+.sidebar {
+  width: 240px;
+  flex-shrink: 0;
+  background: #fff;
+  border-right: 1px solid #eef0f6;
+  padding: 20px;
+  box-sizing: border-box;
+}
+
+.profile {
+  background: #eef2ff;
+  border: 1px solid #e0e7ff;
+  border-radius: 14px;
+  padding: 14px;
+}
+.name { font-weight: 700; color: #4338ca; display: flex; align-items: center; gap: 8px; }
+.role {
+  color: #6d28d9; font-size: 0.78rem; text-transform: uppercase;
+  font-weight: 600; margin-top: 4px; letter-spacing: 0.04em;
+}
+
+.status {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 10px; font-size: 0.82rem; margin: 18px 0; color: #6b7280;
+}
 .ok { color: #16a34a; font-weight: 600; }
 .no { color: #dc2626; font-weight: 600; }
-.logout { width: 100%; padding: 9px; border: 1px solid #e5e7eb; border-radius: 10px; background: #fff; cursor: pointer; font-weight: 600; }
 
-.main { flex: 1; padding: 26px; max-width: 900px; }
-.hero { background: linear-gradient(120deg,#4f46e5,#7c3aed,#9333ea); border-radius: 20px; padding: 24px 28px; color: #fff; }
-.hero h1 { margin: 0; font-size: 1.5rem; }
+.logout {
+  width: 100%; padding: 9px; border: 1px solid #e5e7eb; border-radius: 10px;
+  background: #fff; cursor: pointer; font-weight: 600;
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+}
+.logout:hover { background: #f9fafb; }
+
+/* ============================================================
+   HERO
+   ============================================================ */
+.hero {
+  background: linear-gradient(120deg, #4f46e5, #7c3aed, #9333ea);
+  border-radius: 20px;
+  padding: 24px 28px;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  box-shadow: 0 12px 30px rgba(79, 70, 229, 0.22);
+}
+.hero-text { flex: 1; min-width: 0; }
+.hero h1 { margin: 0; font-size: 1.5rem; line-height: 1.2; }
 .hero p { margin: 6px 0 0; opacity: 0.9; font-size: 0.9rem; }
-.badge { display: inline-block; margin-top: 12px; padding: 4px 14px; background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.35); border-radius: 999px; font-size: 0.78rem; }
+.badge {
+  display: inline-block; margin-top: 12px; padding: 4px 14px;
+  background: rgba(255, 255, 255, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px; font-size: 0.78rem;
+}
+.hero-mascot { flex-shrink: 0; margin-bottom: -28px; }
 
-.kpis { display: grid; grid-template-columns: repeat(3,1fr); gap: 14px; margin: 20px 0; }
-.kpi { background: #fff; border: 1px solid #eef0f6; border-radius: 16px; padding: 18px; }
-.kpi-label { color: #6b7280; font-size: 0.78rem; text-transform: uppercase; font-weight: 600; }
-.kpi-value { font-size: 1.6rem; font-weight: 800; color: #111827; margin-top: 4px; }
-.restricted { background: #eff6ff; border: 1px solid #dbeafe; border-radius: 12px; padding: 14px; color: #2563eb; margin: 20px 0; }
+/* ============================================================
+   KPI CARDS
+   ============================================================ */
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+  margin: 20px 0;
+}
+.kpi {
+  background: #fff; border: 1px solid #eef0f6; border-radius: 16px;
+  padding: 18px; box-shadow: 0 6px 20px rgba(17, 24, 39, 0.05);
+}
+.kpi-ic {
+  width: 40px; height: 40px; border-radius: 11px;
+  display: flex; align-items: center; justify-content: center; margin-bottom: 10px;
+}
+.kpi-ic.sales   { background: #e0e7ff; color: #4f46e5; }
+.kpi-ic.profit  { background: #dcfce7; color: #16a34a; }
+.kpi-ic.anomaly { background: #fef3c7; color: #d97706; }
+.kpi-label {
+  color: #6b7280; font-size: 0.78rem; text-transform: uppercase;
+  font-weight: 600; letter-spacing: 0.04em;
+}
+.kpi-value {
+  font-size: 1.6rem; font-weight: 800; color: #111827;
+  margin-top: 4px; word-break: break-word;
+}
 
+.restricted {
+  background: #eff6ff; border: 1px solid #dbeafe; border-radius: 12px;
+  padding: 14px; color: #2563eb; margin: 20px 0;
+}
+
+/* ============================================================
+   CHAT
+   ============================================================ */
 .chat { margin: 20px 0; }
 .msg { display: flex; margin: 10px 0; }
 .msg.user { justify-content: flex-end; }
-.bubble { max-width: 75%; padding: 12px 16px; border-radius: 16px; background: #f3f4f6; }
+
+.bubble {
+  max-width: 75%;
+  padding: 12px 16px;
+  border-radius: 16px;
+  background: #f3f4f6;
+  overflow-wrap: anywhere;   /* une longue valeur ne casse plus la mise en page */
+}
 .msg.user .bubble { background: #4f46e5; color: #fff; }
+
 .sql { margin-top: 8px; }
-.sql pre { background: #1e293b; color: #e2e8f0; padding: 10px; border-radius: 8px; overflow-x: auto; font-size: 0.8rem; }
+.sql summary {
+  cursor: pointer; font-size: 0.82rem; color: #6b7280;
+  display: flex; align-items: center; gap: 6px;
+}
+.sql pre {
+  background: #1e293b; color: #e2e8f0; padding: 10px; border-radius: 8px;
+  overflow-x: auto;          /* le SQL long défile au lieu de déborder */
+  font-size: 0.8rem; margin: 8px 0 0;
+}
 
-.chips { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; margin: 12px 0; }
-.chips button { border: 1px solid #e0e7ff; background: #fff; color: #4f46e5; border-radius: 999px; padding: 7px 18px; cursor: pointer; font-size: 0.85rem; }
-.chips button:hover { background: #eef2ff; }
+/* Curseur clignotant pendant l'écriture */
+.caret {
+  display: inline-block; width: 2px; height: 1em; margin-left: 2px;
+  vertical-align: text-bottom; background: #4f46e5;
+  animation: caret 0.9s steps(1) infinite;
+}
+@keyframes caret {
+  0%, 50%   { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
 
+/* ============================================================
+   SUGGESTIONS
+   ============================================================ */
+.chips {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  align-items: flex-start; margin: 12px 0;
+}
+.chips button {
+  border: 1px solid #e0e7ff; background: #fff; color: #4f46e5;
+  border-radius: 999px; padding: 7px 18px; cursor: pointer;
+  font-size: 0.85rem; transition: all 0.2s ease;
+}
+.chips button:hover { background: #eef2ff; transform: translateY(-1px); }
+
+/* ============================================================
+   INPUT BAR
+   ============================================================ */
 .input-bar { display: flex; gap: 10px; margin-top: 16px; }
-.input-bar input { flex: 1; padding: 12px 16px; border: 1px solid #e5e7eb; border-radius: 999px; }
-.input-bar button { padding: 12px 24px; border: none; border-radius: 999px; background: #4f46e5; color: #fff; font-weight: 600; cursor: pointer; }
+.input-bar input {
+  flex: 1; min-width: 0; padding: 12px 16px;
+  border: 1px solid #e5e7eb; border-radius: 999px; font-size: 0.95rem;
+}
+.input-bar button {
+  padding: 12px 24px; border: none; border-radius: 999px;
+  background: #4f46e5; color: #fff; font-weight: 600; cursor: pointer;
+  white-space: nowrap;
+}
+.input-bar button:disabled { opacity: 0.55; cursor: default; }
 
-.ic { display:inline-flex; vertical-align:middle; }
-.ic svg { display:block; }
-.ic-hero { display:inline-flex; vertical-align:middle; margin-right:4px; }
-.row-ic { display:inline-flex; align-items:center; gap:6px; }
-.kpi-ic { width:40px; height:40px; border-radius:11px; display:flex; align-items:center; justify-content:center; margin-bottom:10px; }
-.kpi-ic.sales { background:#e0e7ff; color:#4f46e5; }
-.kpi-ic.profit { background:#dcfce7; color:#16a34a; }
-.kpi-ic.anomaly { background:#fef3c7; color:#d97706; }
-.logout { display:flex; align-items:center; justify-content:center; gap:7px; }
+/* ============================================================
+   ICONS
+   ============================================================ */
+.ic { display: inline-flex; }
+.ic svg { display: block; }
+.row-ic { display: inline-flex; align-items: center; gap: 6px; }
+
+/* ============================================================
+   RESPONSIVE — du plus large au plus étroit
+   ============================================================ */
+
+/* Tablette paysage : la mascotte rétrécit avant de disparaître */
+@media (max-width: 900px) {
+  .hero-mascot { width: 110px !important; }
+}
+
+/* Tablette / petit écran : la sidebar passe en barre horizontale */
+@media (max-width: 768px) {
+  .layout { flex-direction: column; }
+
+  .sidebar {
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid #eef0f6;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 16px;
+  }
+  .profile { flex: 1; padding: 10px 12px; }
+  .status { margin: 0; flex-shrink: 0; }
+  .logout { width: auto; padding: 8px 16px; white-space: nowrap; }
+
+  .main { padding: 16px; max-width: 100%; }
+  .hero { padding: 20px; }
+  .hero h1 { font-size: 1.25rem; }
+  .bubble { max-width: 88%; }
+}
+
+/* Mobile : tout passe en colonne */
+@media (max-width: 560px) {
+  .sidebar { flex-wrap: wrap; }
+  .profile { flex: 1 1 100%; }
+  .status { flex: 1; }
+
+  .hero-mascot { display: none; }
+  .hero { padding: 18px; }
+  .hero h1 { font-size: 1.15rem; }
+  .hero p { font-size: 0.85rem; }
+
+  .kpi-value { font-size: 1.35rem; }
+  .bubble { max-width: 94%; font-size: 0.92rem; }
+
+  .chips { flex-direction: column; }
+  .chips button { width: 100%; text-align: left; font-size: 0.82rem; }
+
+  .input-bar { flex-direction: column; }
+  .input-bar button { width: 100%; }
+}
+
+/* Accessibilité : pas d'animation pour qui n'en veut pas */
+@media (prefers-reduced-motion: reduce) {
+  .caret { animation: none; }
+  .chips button:hover { transform: none; }
+}
 </style>
