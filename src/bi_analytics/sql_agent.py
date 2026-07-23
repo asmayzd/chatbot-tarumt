@@ -1,5 +1,7 @@
 import re
-import sqlite3
+import configparser
+import os
+import psycopg2
 import pandas as pd
 
 
@@ -18,8 +20,9 @@ class SQLAgent:
     trusting the language model to add a WHERE clause.
     """
 
+    # Retrait de 'update' des mots-clés interdits pour autoriser l'édition par l'Admin
     FORBIDDEN_KEYWORDS = [
-        "insert", "update", "delete", "drop", "alter", "create",
+        "insert", "delete", "drop", "alter", "create",
         "replace", "truncate", "attach", "detach", "pragma",
         "vacuum", "reindex", "grant", "revoke",
     ]
@@ -46,15 +49,21 @@ class SQLAgent:
         self._scoped_for = None  # customer_id the views are currently built for
 
     # ------------------------------------------------------------------
-    # Setup
+    # Setup & Connection Management (Auto-Reconnect)
     # ------------------------------------------------------------------
-    def connect_database(self):
-        """Se connecte directement à PostgreSQL au lieu de SQLite."""
-        try:
-            import configparser
-            import os
-            import psycopg2
+    def get_connection(self):
+        """
+        Vérifie si la connexion PostgreSQL/Supabase est active.
+        Si elle est fermée ou nulle, en rétablit une automatiquement.
+        """
+        if self.connection is None or getattr(self.connection, 'closed', 1) != 0:
+            print("🔄 Reconnexion à PostgreSQL/Supabase en cours...")
+            self.connect_database()
+        return self.connection
 
+    def connect_database(self):
+        """Se connecte directement à PostgreSQL / Supabase."""
+        try:
             config = configparser.ConfigParser()
             config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "config.ini"))
             if not os.path.exists(config_path):
@@ -74,7 +83,7 @@ class SQLAgent:
                 user=db_user,
                 password=db_pass
             )
-            print("✅ SQLAgent connecté à PostgreSQL avec succès !")
+            print("✅ SQLAgent connecté à PostgreSQL/Supabase avec succès !")
             return self
         except Exception as e:
             print(f"❌ Erreur connexion PostgreSQL SQLAgent: {e}")
@@ -82,13 +91,14 @@ class SQLAgent:
 
     def _build_anon_view(self):
         """Expose customer segments without the nominative column."""
-        cursor = self.connection.cursor()
+        conn = self.get_connection()
+        cursor = conn.cursor()
         cursor.execute("DROP VIEW IF EXISTS customers_anon")
         cursor.execute("""
             CREATE TEMP VIEW customers_anon AS
             SELECT customer_id, segment FROM customers
         """)
-        self.connection.commit()
+        conn.commit()
 
     def init_gemini(self):
         """Initialise the Gemini client (reads GEMINI_API_KEY from env)."""
@@ -105,20 +115,14 @@ class SQLAgent:
     def build_scoped_views(self, customer_id: str):
         """
         (Re)create views restricted to a single customer.
-
-        Views are temporary and rebuilt whenever the customer changes, so one
-        session can never read another customer's rows.
         """
-        if self.connection is None:
-            raise ValueError("Database not connected.")
+        conn = self.get_connection()
 
         if self._scoped_for == customer_id:
             return  # already built for this customer
 
-        cursor = self.connection.cursor()
+        cursor = conn.cursor()
 
-        # Parameter binding is not allowed in CREATE VIEW, so the id is
-        # validated against a strict pattern before being interpolated.
         if not re.fullmatch(r"[A-Za-z0-9\-_]{1,32}", customer_id or ""):
             raise ValueError("Invalid customer identifier.")
 
@@ -142,7 +146,7 @@ class SQLAgent:
             WHERE o.customer_id = '{customer_id}'
         """)
 
-        self.connection.commit()
+        conn.commit()
         self._scoped_for = customer_id
 
     def _tables_for(self, role: str):
@@ -156,15 +160,15 @@ class SQLAgent:
     # Schema introspection
     # ------------------------------------------------------------------
     def get_schema_description(self, role: str = "admin") -> str:
-        """Retourne la description des tables adaptées à PostgreSQL ou SQLite."""
+        """Retourne la description des tables adaptées à PostgreSQL."""
+        conn = self.get_connection()
         schema_desc = ""
         tables = ["customers", "orders", "order_items", "products"]
-        cursor = self.connection.cursor()
+        cursor = conn.cursor()
 
         for table in tables:
             schema_desc += f"\nTable: {table}\nColumns:\n"
             try:
-                # Tentative PostgreSQL (information_schema)
                 cursor.execute("""
                     SELECT column_name, data_type 
                     FROM information_schema.columns 
@@ -176,13 +180,11 @@ class SQLAgent:
                     for col in columns:
                         schema_desc += f" - {col[0]} ({col[1]})\n"
                 else:
-                    # Fallback SQLite au cas où
                     cursor.execute(f"PRAGMA table_info({table})")
                     for col in cursor.fetchall():
                         schema_desc += f" - {col[1]} ({col[2]})\n"
             except Exception:
-                # En cas de rollback/erreur sur transaction PostgreSQL
-                self.connection.rollback()
+                conn.rollback()
                 try:
                     cursor.execute(f"PRAGMA table_info({table})")
                     for col in cursor.fetchall():
@@ -205,31 +207,32 @@ class SQLAgent:
                 "orders. Never mention other customers. Do not add any filter "
                 "on customer_id: the restriction is already applied."
             )
+        elif role == "admin":
+            context = (
+                "As an admin, you can read and UPDATE tables when requested "
+                "(e.g., updating customer names, order details). "
+                "Join through order_id, product_id and customer_id when needed."
+            )
         else:
             context = (
-                "Numeric measures (sales, profit, quantity, discount) live in "
-                "order_items. Country, city, region, market and dates live in "
-                "orders. Category and product_name live in products. Segment "
-                "lives in customers_anon, which contains no customer names. "
-                "Customer identities are confidential and must never be "
-                "queried or returned. Join through order_id, product_id and "
-                "customer_id when needed."
+                "Numeric measures live in order_items. Locations in orders. "
+                "Products in products. Customer identities are confidential "
+                "for analyst roles."
             )
 
         return f"""
-You are an expert data analyst who writes SQLite queries.
+You are an expert data analyst and database administrator.
 
-Database schema (relational, use JOINs when the answer spans several tables):
+Database schema:
 {schema}
 
 {context}
 
 Rules:
-1. Write ONE single valid SQLite SELECT query that answers the question.
-2. Only use the tables and columns listed above. Never reference any other table.
+1. Write ONE single valid SQL query (SELECT or UPDATE) that answers/performs the question.
+2. Only use the tables and columns listed above.
 3. Output ONLY the raw SQL query: no explanation, no comment, no markdown.
-4. Never modify data: only SELECT statements are allowed.
-5. Use LIMIT when the user asks for "top", "best" or "worst" results.
+4. For modification requests (e.g. "change customer name"), produce a valid UPDATE statement.
 
 User question: "{question}"
 
@@ -243,7 +246,6 @@ SQL query:
         sql = re.sub(r"^```", "", sql).strip()
         sql = re.sub(r"```$", "", sql).strip()
 
-        # Drop any leading "-- comment" lines the model may have added.
         lines = [ln for ln in sql.splitlines() if not ln.strip().startswith("--")]
         sql = "\n".join(lines).strip()
 
@@ -252,7 +254,6 @@ SQL query:
     # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------
-    # Human-readable reasons, so the interface can explain *why* a query failed.
     REASON_READONLY = "readonly"
     REASON_SCOPE = "scope"
     REASON_PII = "pii"
@@ -260,15 +261,14 @@ SQL query:
     def check_sql(self, sql: str, role: str = "analyst"):
         """
         Validate a generated query.
-
-        Returns (True, None) when the query is safe, otherwise (False, reason)
-        where reason is one of REASON_READONLY / REASON_SCOPE / REASON_PII.
         """
         lowered = sql.lower().strip()
 
-        # A read-only query starts with SELECT, or with a WITH clause (CTE)
-        # that ultimately feeds a SELECT. Writes are caught below.
-        if not (lowered.startswith("select") or lowered.startswith("with")):
+        # Permet UPDATE si le rôle est 'admin'
+        is_select = lowered.startswith("select") or lowered.startswith("with")
+        is_update = lowered.startswith("update") and role == "admin"
+
+        if not (is_select or is_update):
             return False, self.REASON_READONLY
 
         if ";" in sql.strip().rstrip(";"):
@@ -286,9 +286,6 @@ SQL query:
                 if re.search(rf"\b{column}\b", lowered):
                     return False, self.REASON_PII
 
-        # Allowlist: a `user` may only read the views scoped to their own rows.
-        # Anything not explicitly permitted is refused, so a table added to the
-        # database later cannot silently become readable.
         if role == "user":
             referenced = re.findall(r"\b(?:from|join)\s+([a-z_][a-z0-9_]*)", lowered)
             allowed = {v.lower() for v in self.SCOPED_VIEWS}
@@ -298,26 +295,22 @@ SQL query:
         return True, None
 
     def is_safe_sql(self, sql: str, role: str = "analyst") -> bool:
-        """Backward-compatible boolean wrapper around check_sql()."""
         safe, _ = self.check_sql(sql, role)
         return safe
 
     def _denial_message(self, reason: str, role: str) -> str:
-        """Explain the refusal in terms that match the user's role."""
         if reason == self.REASON_PII:
             return (
                 "Access Denied: customer personal data is confidential. "
-                "Your role can analyse aggregated figures (segments, regions, "
-                "categories) but cannot access customer identities."
+                "Your role can analyse aggregated figures but cannot access customer identities."
             )
         if reason == self.REASON_SCOPE:
             return (
-                "Access Denied: you can only query your own orders. "
-                "Company-wide data is restricted to analysts and administrators."
+                "Access Denied: you can only query your own orders."
             )
         return (
-            "Access Denied: the generated query was rejected because only "
-            "read-only queries are allowed."
+            "Access Denied: the generated query was rejected because "
+            "this operation is not allowed for your role."
         )
 
     # ------------------------------------------------------------------
@@ -334,24 +327,30 @@ SQL query:
         return self._clean_sql(response.text)
 
     def run_sql(self, sql: str) -> pd.DataFrame:
-        if self.connection is None:
-            raise ValueError("Database not connected.")
-        return pd.read_sql_query(sql, self.connection)
+        """Exécute les SELECT ainsi que les UPDATE avec gestion automatique du COMMIT."""
+        conn = self.get_connection()
+        lowered = sql.lower().strip()
+
+        if lowered.startswith("update"):
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            conn.commit()
+            rows_affected = cursor.rowcount
+            cursor.close()
+            return pd.DataFrame([{"status": "success", "message": f"Successfully updated {rows_affected} row(s)."}])
+        else:
+            return pd.read_sql_query(sql, conn)
 
     def ask(self, question: str, role: str = "analyst",
             customer_id: str = None) -> dict:
         """
         Full pipeline: scope -> SQL -> security check -> execution.
-
-        For the `user` role a customer_id is mandatory: without it there is
-        nothing to scope the views to, so the request is refused.
         """
         if role == "user":
             if not customer_id:
                 return {
                     "question": question, "sql": None, "result": None,
-                    "error": ("Access Denied: this session has no customer scope, "
-                              "so no personal order data can be retrieved."),
+                    "error": ("Access Denied: this session has no customer scope."),
                 }
             self.build_scoped_views(customer_id)
 
@@ -370,8 +369,18 @@ SQL query:
             result = self.run_sql(sql)
             error = None
         except Exception as exc:
-            result = None
-            error = f"SQL execution failed: {exc}"
+            # En cas de perte de connexion pendant la requête, on tente une deuxième fois
+            if "closed" in str(exc).lower() or "terminated" in str(exc).lower():
+                try:
+                    self.connection = None
+                    result = self.run_sql(sql)
+                    error = None
+                except Exception as retry_exc:
+                    result = None
+                    error = f"SQL execution failed: {retry_exc}"
+            else:
+                result = None
+                error = f"SQL execution failed: {exc}"
 
         return {"question": question, "sql": sql, "result": result, "error": error}
 
@@ -388,8 +397,7 @@ Here is the SQL query result:
 {preview}
 
 Write a short, direct answer to the question based on this result.
-Detect the language of the user question and reply in that same
-language. Be concise and go straight to the data point. No filler.
+Detect the language of the user question and reply in that same language.
 """.strip()
 
         response = self.client.models.generate_content(
