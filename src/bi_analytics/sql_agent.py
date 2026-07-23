@@ -31,8 +31,8 @@ class SQLAgent:
     # anonymised view: analysts need segments, not identities.
     ANALYST_TABLES = ["customers_anon", "products", "orders", "order_items"]
 
-    # An admin may additionally read the nominative customer table.
-    ADMIN_TABLES = ["customers", "products", "orders", "order_items"]
+    # An admin may additionally read the nominative customer table and chat logs.
+    ADMIN_TABLES = ["customers", "products", "orders", "order_items", "chat_messages"]
 
     # Views a `user` may query (created per session, already filtered).
     SCOPED_VIEWS = ["my_orders", "my_order_items"]
@@ -139,13 +139,14 @@ class SQLAgent:
 
         cursor.execute(f"""
             CREATE TEMP VIEW my_order_items AS
-            SELECT oi.order_id, oi.product_id, oi.sales, oi.quantity,
+            SELECT oi.order_id, oi.product_id, p.product_name, oi.sales, oi.quantity,
                    oi.discount, oi.profit, oi.shipping_cost
             FROM order_items oi
             JOIN orders o ON oi.order_id = o.order_id
+            LEFT JOIN products p ON oi.product_id = p.product_id
             WHERE o.customer_id = '{customer_id}'
         """)
-
+        
         conn.commit()
         self._scoped_for = customer_id
 
@@ -163,7 +164,14 @@ class SQLAgent:
         """Retourne la description des tables adaptées à PostgreSQL."""
         conn = self.get_connection()
         schema_desc = ""
-        tables = ["customers", "orders", "order_items", "products"]
+        
+        if role == "user":
+            tables = ["my_orders", "my_order_items"]
+        elif role == "admin":
+            tables = ["customers", "orders", "order_items", "products", "chat_messages"]
+        else:
+            tables = ["customers_anon", "orders", "order_items", "products"]
+            
         cursor = conn.cursor()
 
         for table in tables:
@@ -203,14 +211,16 @@ class SQLAgent:
 
         if role == "user":
             context = (
-                "These views already contain ONLY the current customer's own "
-                "orders. Never mention other customers. Do not add any filter "
-                "on customer_id: the restriction is already applied."
+                "You are querying for the logged-in customer. "
+                "You MUST query strictly from 'my_orders' or 'my_order_items'. "
+                "Do NOT reference 'orders', 'order_items' or 'customers' base tables. "
+                "The restriction on customer_id is ALREADY applied inside the view."
             )
         elif role == "admin":
             context = (
                 "As an admin, you can read and UPDATE tables when requested "
                 "(e.g., updating customer names, order details). "
+                "For questions about common or most asked questions, query column 'message' from 'chat_messages' WHERE sender = 'user'. "
                 "Join through order_id, product_id and customer_id when needed."
             )
         else:
@@ -257,6 +267,7 @@ SQL query:
     REASON_READONLY = "readonly"
     REASON_SCOPE = "scope"
     REASON_PII = "pii"
+    REASON_DATE_UPDATE = "date_update"
 
     def check_sql(self, sql: str, role: str = "analyst"):
         """
