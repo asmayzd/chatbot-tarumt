@@ -20,24 +20,15 @@ class SQLAgent:
     trusting the language model to add a WHERE clause.
     """
 
-    # Retrait de 'update' des mots-clés interdits pour autoriser l'édition par l'Admin
     FORBIDDEN_KEYWORDS = [
         "insert", "delete", "drop", "alter", "create",
         "replace", "truncate", "attach", "detach", "pragma",
         "vacuum", "reindex", "grant", "revoke",
     ]
 
-    # Tables/views an analyst may query. `customers` is replaced by an
-    # anonymised view: analysts need segments, not identities.
     ANALYST_TABLES = ["customers_anon", "products", "orders", "order_items"]
-
-    # An admin may additionally read the nominative customer table and chat logs.
     ADMIN_TABLES = ["customers", "products", "orders", "order_items", "chat_messages"]
-
-    # Views a `user` may query (created per session, already filtered).
     SCOPED_VIEWS = ["my_orders", "my_order_items"]
-
-    # Columns carrying personal data. Never exposed below the admin role.
     PII_COLUMNS = ["customer_name"]
 
     def __init__(self, db_path: str = "data/superstore_bi.db",
@@ -46,16 +37,13 @@ class SQLAgent:
         self.model = model
         self.connection = None
         self.client = None
-        self._scoped_for = None  # customer_id the views are currently built for
+        self._scoped_for = None
 
     # ------------------------------------------------------------------
     # Setup & Connection Management (Auto-Reconnect)
     # ------------------------------------------------------------------
     def get_connection(self):
-        """
-        Vérifie si la connexion PostgreSQL/Supabase est active.
-        Si elle est fermée ou nulle, en rétablit une automatiquement.
-        """
+        """Vérifie et rétablit la connexion PostgreSQL si elle est fermée."""
         if self.connection is None or getattr(self.connection, 'closed', 1) != 0:
             print("🔄 Reconnexion à PostgreSQL/Supabase en cours...")
             self.connect_database()
@@ -93,12 +81,18 @@ class SQLAgent:
         """Expose customer segments without the nominative column."""
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute("DROP VIEW IF EXISTS customers_anon")
-        cursor.execute("""
-            CREATE TEMP VIEW customers_anon AS
-            SELECT customer_id, segment FROM customers
-        """)
-        conn.commit()
+        try:
+            cursor.execute("DROP VIEW IF EXISTS customers_anon")
+            cursor.execute("""
+                CREATE TEMP VIEW customers_anon AS
+                SELECT customer_id, segment FROM customers
+            """)
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            cursor.close()
 
     def init_gemini(self):
         """Initialise the Gemini client (reads GEMINI_API_KEY from env)."""
@@ -113,42 +107,45 @@ class SQLAgent:
     # Row-level security
     # ------------------------------------------------------------------
     def build_scoped_views(self, customer_id: str):
-        """
-        (Re)create views restricted to a single customer.
-        """
+        """(Re)create views restricted to a single customer."""
         conn = self.get_connection()
 
         if self._scoped_for == customer_id:
-            return  # already built for this customer
-
-        cursor = conn.cursor()
+            return
 
         if not re.fullmatch(r"[A-Za-z0-9\-_]{1,32}", customer_id or ""):
             raise ValueError("Invalid customer identifier.")
 
-        cursor.execute("DROP VIEW IF EXISTS my_order_items")
-        cursor.execute("DROP VIEW IF EXISTS my_orders")
+        cursor = conn.cursor()
+        try:
+            cursor.execute("DROP VIEW IF EXISTS my_order_items")
+            cursor.execute("DROP VIEW IF EXISTS my_orders")
 
-        cursor.execute(f"""
-            CREATE TEMP VIEW my_orders AS
-            SELECT order_id, order_date, ship_date, ship_mode,
-                   market, region, country, city, state
-            FROM orders
-            WHERE customer_id = '{customer_id}'
-        """)
+            cursor.execute(f"""
+                CREATE TEMP VIEW my_orders AS
+                SELECT order_id, order_date, ship_date, ship_mode,
+                       market, region, country, city, state
+                FROM orders
+                WHERE customer_id = '{customer_id}'
+            """)
 
-        cursor.execute(f"""
-            CREATE TEMP VIEW my_order_items AS
-            SELECT oi.order_id, oi.product_id, p.product_name, oi.sales, oi.quantity,
-                   oi.discount, oi.profit, oi.shipping_cost
-            FROM order_items oi
-            JOIN orders o ON oi.order_id = o.order_id
-            LEFT JOIN products p ON oi.product_id = p.product_id
-            WHERE o.customer_id = '{customer_id}'
-        """)
-        
-        conn.commit()
-        self._scoped_for = customer_id
+            cursor.execute(f"""
+                CREATE TEMP VIEW my_order_items AS
+                SELECT oi.order_id, oi.product_id, p.product_name, oi.sales, oi.quantity,
+                       oi.discount, oi.profit, oi.shipping_cost
+                FROM order_items oi
+                JOIN orders o ON oi.order_id = o.order_id
+                LEFT JOIN products p ON oi.product_id = p.product_id
+                WHERE o.customer_id = '{customer_id}'
+            """)
+            
+            conn.commit()
+            self._scoped_for = customer_id
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            cursor.close()
 
     def _tables_for(self, role: str):
         if role == "user":
@@ -193,12 +190,6 @@ class SQLAgent:
                         schema_desc += f" - {col[1]} ({col[2]})\n"
             except Exception:
                 conn.rollback()
-                try:
-                    cursor.execute(f"PRAGMA table_info({table})")
-                    for col in cursor.fetchall():
-                        schema_desc += f" - {col[1]} ({col[2]})\n"
-                except Exception:
-                    pass
 
         cursor.close()
         return schema_desc
@@ -225,9 +216,11 @@ class SQLAgent:
             )
         else:
             context = (
-                "Numeric measures live in order_items. Locations in orders. "
-                "Products in products. Customer identities are confidential "
-                "for analyst roles."
+                "CRITICAL COLUMN RULES:\n"
+                "- Total sales must be calculated using SUM(oi.sales) directly.\n"
+                "- NEVER invent a column named 'price'. There is no 'price' column in order_items.\n"
+                "- Country is in 'orders.country'.\n"
+                "- Always use GROUP BY when using aggregate functions like SUM()."
             )
 
         return f"""
@@ -240,9 +233,8 @@ Database schema:
 
 Rules:
 1. Write ONE single valid SQL query (SELECT or UPDATE) that answers/performs the question.
-2. Only use the tables and columns listed above.
+2. Only use the tables and columns listed above. Never invent non-existent columns like 'price'.
 3. Output ONLY the raw SQL query: no explanation, no comment, no markdown.
-4. For modification requests (e.g. "change customer name"), produce a valid UPDATE statement.
 
 User question: "{question}"
 
@@ -270,12 +262,9 @@ SQL query:
     REASON_DATE_UPDATE = "date_update"
 
     def check_sql(self, sql: str, role: str = "analyst"):
-        """
-        Validate a generated query.
-        """
+        """Validate a generated query."""
         lowered = sql.lower().strip()
 
-        # Permet UPDATE si le rôle est 'admin'
         is_select = lowered.startswith("select") or lowered.startswith("with")
         is_update = lowered.startswith("update") and role == "admin"
 
@@ -289,7 +278,6 @@ SQL query:
             if re.search(rf"\b{keyword}\b", lowered):
                 return False, self.REASON_READONLY
 
-        # Only an admin may read nominative customer data.
         if role != "admin":
             if re.search(r"\bcustomers\b", lowered):
                 return False, self.REASON_PII
@@ -338,25 +326,29 @@ SQL query:
         return self._clean_sql(response.text)
 
     def run_sql(self, sql: str) -> pd.DataFrame:
-        """Exécute les SELECT ainsi que les UPDATE avec gestion automatique du COMMIT."""
+        """Exécute les SELECT ainsi que les UPDATE avec gestion automatique du COMMIT/ROLLBACK."""
         conn = self.get_connection()
         lowered = sql.lower().strip()
 
-        if lowered.startswith("update"):
-            cursor = conn.cursor()
-            cursor.execute(sql)
-            conn.commit()
-            rows_affected = cursor.rowcount
-            cursor.close()
-            return pd.DataFrame([{"status": "success", "message": f"Successfully updated {rows_affected} row(s)."}])
-        else:
-            return pd.read_sql_query(sql, conn)
+        try:
+            if lowered.startswith("update"):
+                cursor = conn.cursor()
+                cursor.execute(sql)
+                conn.commit()
+                rows_affected = cursor.rowcount
+                cursor.close()
+                return pd.DataFrame([{"status": "success", "message": f"Successfully updated {rows_affected} row(s)."}])
+            else:
+                df = pd.read_sql_query(sql, conn)
+                return df
+        except Exception as e:
+            # Nettoie la transaction bloquée en cas d'erreur
+            conn.rollback()
+            raise e
 
     def ask(self, question: str, role: str = "analyst",
             customer_id: str = None) -> dict:
-        """
-        Full pipeline: scope -> SQL -> security check -> execution.
-        """
+        """Full pipeline: scope -> SQL -> security check -> execution."""
         if role == "user":
             if not customer_id:
                 return {
@@ -380,7 +372,12 @@ SQL query:
             result = self.run_sql(sql)
             error = None
         except Exception as exc:
-            # En cas de perte de connexion pendant la requête, on tente une deuxième fois
+            # Réinitialise la connexion PostgreSQL si elle a planté
+            try:
+                self.get_connection().rollback()
+            except Exception:
+                pass
+
             if "closed" in str(exc).lower() or "terminated" in str(exc).lower():
                 try:
                     self.connection = None
@@ -409,9 +406,14 @@ Here is the SQL query result:
 
 Write a short, direct answer to the question based on this result.
 Detect the language of the user question and reply in that same language.
+
+STRICT FORMATTING RULES:
+- Never use markdown syntax or asterisks (NO **, NO *, NO #, NO _).
+- Return plain text ONLY.
+- If listing multiple items, put EACH item on a new line starting with a number (e.g. 1. Item A \n 2. Item B).
 """.strip()
 
         response = self.client.models.generate_content(
             model=self.model, contents=prompt,
         )
-        return response.text.strip()
+        return response.text.replace("*", "").strip()
