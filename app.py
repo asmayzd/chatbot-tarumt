@@ -5,9 +5,14 @@ import os
 import inspect
 import configparser
 
+from src.database.db_manager import check_and_auto_ingest
+
+# Exécuté une fois au lancement du serveur/application
+check_and_auto_ingest()
+
 # Intégration des tables SQL
-from src.database.db_manager import init_db
-init_db()
+#from src.database.db_manager import init_db
+#init_db()
 
 # Load confidential keys from the local config.ini file safely
 config = configparser.ConfigParser()
