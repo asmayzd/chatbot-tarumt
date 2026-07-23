@@ -3,6 +3,33 @@ import configparser
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
+def check_and_auto_ingest():
+    """Vérifie si la base PostgreSQL est peuplée. Si elle est vide, lance l'ingestion automatiquement."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # 1. On initialise d'abord les structures si elles n'existent pas
+        init_db()
+        
+        # 2. On vérifie si la table 'customers' contient au moins une ligne
+        cursor.execute("SELECT COUNT(*) FROM customers;")
+        count = cursor.fetchone()[0]
+        
+        cursor.close()
+        conn.close()
+
+        if count == 0:
+            print("⚡ Base de données PostgreSQL vide détectée. Lancement automatique de l'ingestion...")
+            # Import différé pour éviter les imports circulaires
+            from src.database.ingest_data import populate_database
+            populate_database()
+        else:
+            print(f"✅ Base de données PostgreSQL déjà opérationnelle ({count} clients détectés). Pas d'ingestion nécessaire.")
+
+    except Exception as e:
+        print(f"⚠️ Erreur lors de la vérification/ingestion automatique : {str(e)}")
+
 def get_db_connection():
     """Établit une connexion à PostgreSQL en lisant les identifiants depuis le fichier config.ini."""
     try:
