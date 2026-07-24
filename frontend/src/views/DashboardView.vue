@@ -3,9 +3,12 @@ import { ref, onMounted } from "vue";
 import { api } from "../services/api.js";
 import { ICONS } from "../components/Icons.js";
 import Mascot from "../components/Mascot.vue";
+import SecurityDashboard from "../components/SecurityDashboard.vue";
 
 const props = defineProps({ user: Object });
 const emit = defineEmits(["logout"]);
+
+const activeView = ref("chat"); // "chat" | "security" (security: admin only)
 
 const kpis = ref(null);
 const suggestions = ref([]);
@@ -14,6 +17,11 @@ const messages = ref([
 ]);
 const input = ref("");
 const loading = ref(false);
+
+// --- Historique de conversations persistant (mémoire de chat) ---
+const sessions = ref([]);
+const currentSessionId = ref(null);
+const sessionsLoading = ref(false);
 
 // État de la mascotte : idle / thinking / talking
 const mascotState = ref("idle");
@@ -68,7 +76,63 @@ onMounted(async () => {
     const s = await api.suggestions();
     suggestions.value = s.suggestions;
   } catch (e) { /* ignore */ }
+
+  await loadSessions();
+  if (sessions.value.length > 0) {
+    await openSession(sessions.value[0].session_id);
+  }
+  // Sinon : pas de conversation existante, on garde le message d'accueil local ;
+  // /ask en créera une automatiquement dès la première question.
 });
+
+async function loadSessions() {
+  sessionsLoading.value = true;
+  try {
+    const res = await api.listSessions();
+    sessions.value = res.sessions;
+  } catch (e) {
+    /* ignore */
+  } finally {
+    sessionsLoading.value = false;
+  }
+}
+
+async function openSession(sessionId) {
+  if (sessionId === currentSessionId.value) return;
+  try {
+    const res = await api.getSessionMessages(sessionId);
+    currentSessionId.value = sessionId;
+    messages.value = res.messages.length
+      ? res.messages
+      : [{ role: "assistant", content: "Hello! Ask me about your data." }];
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+function startNewChat() {
+  currentSessionId.value = null;
+  messages.value = [{ role: "assistant", content: "Hello! Ask me about your data." }];
+}
+
+async function removeSession(sessionId, evt) {
+  evt.stopPropagation();
+  try {
+    await api.deleteSession(sessionId);
+  } catch (e) {
+    /* ignore */
+  }
+  const wasCurrent = sessionId === currentSessionId.value;
+  await loadSessions();
+  if (wasCurrent) {
+    if (sessions.value.length > 0) {
+      currentSessionId.value = null; // force reload even if same id ordering
+      await openSession(sessions.value[0].session_id);
+    } else {
+      startNewChat();
+    }
+  }
+}
 
 async function send(question) {
   const q = (question || input.value).trim();
@@ -83,9 +147,13 @@ async function send(question) {
   let sql = null;
 
   try {
-    const res = await api.ask(q);
+    const res = await api.ask(q, currentSessionId.value);
     fullText = res.content;
     sql = res.sql;
+    if (res.session_id && res.session_id !== currentSessionId.value) {
+      currentSessionId.value = res.session_id;
+    }
+    loadSessions(); // rafraîchit la liste (nouvelle conversation / titre auto)
   } catch (e) {
     fullText = "Error: " + e.message;
   }
@@ -138,11 +206,39 @@ function money(v) {
           {{ user.can_view_bi ? "Granted" : "Restricted" }}
         </span>
       </div>
+
+      <button
+        v-if="user.role === 'admin'"
+        :class="['nav-toggle', { active: activeView === 'security' }]"
+        @click="activeView = activeView === 'security' ? 'chat' : 'security'"
+      >
+        <span class="ic" v-html="ICONS.shield"></span>
+        {{ activeView === 'security' ? 'Back to chat' : 'Cybersecurity' }}
+      </button>
+
+      <button class="new-chat" @click="startNewChat">+ New chat</button>
+
+      <div class="sessions">
+        <button
+          v-for="s in sessions"
+          :key="s.session_id"
+          :class="['session-item', { active: s.session_id === currentSessionId }]"
+          @click="openSession(s.session_id)"
+        >
+          <span class="session-name">{{ s.session_name }}</span>
+          <span class="session-del" @click="removeSession(s.session_id, $event)">&times;</span>
+        </button>
+        <p v-if="!sessionsLoading && sessions.length === 0" class="no-sessions">
+          No saved conversations yet.
+        </p>
+      </div>
+
       <button class="logout" @click="logout"><span class="ic" v-html="ICONS.logout"></span> Log out</button>
     </aside>
 
     <!-- Main -->
     <main class="main">
+      <template v-if="activeView === 'chat'">
       <div class="hero">
         <div class="hero-text">
           <h1>TARUMT Smart Assistant</h1>
@@ -201,6 +297,9 @@ function money(v) {
         <input v-model="input" placeholder="Type your question…" @keyup.enter="send()" />
         <button @click="send()" :disabled="loading">Send</button>
       </div>
+      </template>
+
+      <SecurityDashboard v-else-if="activeView === 'security' && user.role === 'admin'" />
     </main>
   </div>
 </template>
@@ -234,6 +333,8 @@ function money(v) {
   border-right: 1px solid #eef0f6;
   padding: 20px;
   box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
 }
 
 .profile {
@@ -261,6 +362,50 @@ function money(v) {
   display: flex; align-items: center; justify-content: center; gap: 7px;
 }
 .logout:hover { background: #f9fafb; }
+
+/* ============================================================
+   CONVERSATIONS (historique de chat persistant)
+   ============================================================ */
+.new-chat {
+  width: 100%; margin-top: 14px; padding: 9px; border: 1px dashed #c7d2fe;
+  border-radius: 10px; background: #eef2ff; color: #4f46e5; font-weight: 600;
+  cursor: pointer;
+}
+.new-chat:hover { background: #e0e7ff; }
+
+.nav-toggle {
+  width: 100%; margin-top: 14px; padding: 9px; border: 1px solid #fecaca;
+  border-radius: 10px; background: #fff; color: #dc2626; font-weight: 600;
+  cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 7px;
+}
+.nav-toggle:hover { background: #fef2f2; }
+.nav-toggle.active { background: #dc2626; color: #fff; border-color: #dc2626; }
+
+.sessions {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.session-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%; padding: 8px 10px; border: none; border-radius: 8px;
+  background: transparent; color: #374151; font-size: 0.85rem; cursor: pointer;
+  text-align: left;
+}
+.session-item:hover { background: #f3f4f6; }
+.session-item.active { background: #e0e7ff; color: #4338ca; font-weight: 600; }
+.session-name {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.session-del {
+  color: #9ca3af; font-size: 1rem; line-height: 1; padding: 0 4px; border-radius: 4px;
+}
+.session-del:hover { color: #dc2626; background: #fee2e2; }
+.no-sessions { color: #9ca3af; font-size: 0.8rem; padding: 4px 10px; }
 
 /* ============================================================
    HERO
@@ -420,6 +565,7 @@ function money(v) {
   .profile { flex: 1; padding: 10px 12px; }
   .status { margin: 0; flex-shrink: 0; }
   .logout { width: auto; padding: 8px 16px; white-space: nowrap; }
+  .new-chat, .sessions { display: none; }
 
   .main { padding: 16px; max-width: 100%; }
   .hero { padding: 20px; }

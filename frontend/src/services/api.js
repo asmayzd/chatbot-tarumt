@@ -41,11 +41,55 @@ export const api = {
     return handle(res);
   },
 
-  async ask(question) {
+  async ask(question, sessionId) {
     const res = await fetch(`${BASE_URL}/ask`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders() },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({ question, session_id: sessionId ?? null }),
+    });
+    return handle(res);
+  },
+
+  async listSessions() {
+    const res = await fetch(`${BASE_URL}/sessions`, { headers: authHeaders() });
+    return handle(res);
+  },
+
+  async createSession(sessionName) {
+    const res = await fetch(`${BASE_URL}/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ session_name: sessionName ?? null }),
+    });
+    return handle(res);
+  },
+
+  async getSessionMessages(sessionId) {
+    const res = await fetch(`${BASE_URL}/sessions/${sessionId}/messages`, {
+      headers: authHeaders(),
+    });
+    return handle(res);
+  },
+
+  async deleteSession(sessionId) {
+    const res = await fetch(`${BASE_URL}/sessions/${sessionId}`, {
+      method: "DELETE",
+      headers: authHeaders(),
+    });
+    return handle(res);
+  },
+
+  async securityOverview() {
+    const res = await fetch(`${BASE_URL}/admin/security/overview`, { headers: authHeaders() });
+    return handle(res);
+  },
+
+  async securityEvents({ limit = 100, status, action } = {}) {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (status) params.set("status", status);
+    if (action) params.set("action", action);
+    const res = await fetch(`${BASE_URL}/admin/security/events?${params}`, {
+      headers: authHeaders(),
     });
     return handle(res);
   },
