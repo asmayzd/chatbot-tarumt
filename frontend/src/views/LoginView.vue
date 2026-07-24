@@ -1,7 +1,10 @@
 <script setup>
-import { ref } from "vue";
+import { ref, computed } from "vue";
 import { api } from "../services/api.js";
 import { ICONS } from "../components/Icons.js";
+import { t } from "../i18n.js";
+
+const T = computed(() => t.value.login);
 
 const emit = defineEmits(["logged-in"]);
 const username = ref("");
@@ -28,17 +31,17 @@ async function submit() {
   <div class="login-wrap">
     <div class="login-card">
       <div class="lock" v-html="ICONS.lock"></div>
-      <h1>TARUMT System</h1>
-      <p class="muted">Log in to access the assistant and BI dashboard.</p>
+      <h1>{{ T.title }}</h1>
+      <p class="muted">{{ T.subtitle }}</p>
 
-      <label>Customer ID / Username</label>
-      <input v-model="username" placeholder="e.g. analyst_tarumt" @keyup.enter="submit" />
+      <label>{{ T.userLabel }}</label>
+      <input v-model="username" :placeholder="T.userPlaceholder" @keyup.enter="submit" />
 
-      <label>Password</label>
+      <label>{{ T.passwordLabel }}</label>
       <input v-model="password" type="password" placeholder="••••••••" @keyup.enter="submit" />
 
       <button :disabled="loading" @click="submit">
-        {{ loading ? "Connecting…" : "Sign in" }}
+        {{ loading ? T.connecting : T.signIn }}
       </button>
 
       <p v-if="error" class="error">{{ error }}</p>

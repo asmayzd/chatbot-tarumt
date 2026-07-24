@@ -2,6 +2,10 @@
 import { ref, onMounted, computed } from "vue";
 import { api } from "../services/api.js";
 import { ICONS } from "./Icons.js";
+import { t } from "../i18n.js";
+
+const T = computed(() => t.value.security);
+const C = computed(() => t.value.common);
 
 const overview = ref(null);
 const events = ref([]);
@@ -9,12 +13,12 @@ const loading = ref(true);
 const statusFilter = ref("");
 const hovered = ref(null); // { day, attacks, failed_logins, x, y }
 
-const STATUS_OPTIONS = [
-  { value: "", label: "All statuses" },
-  { value: "BLOCKED,CRITICAL", label: "Attacks (blocked / critical)" },
-  { value: "FAILED", label: "Failed logins" },
-  { value: "SUCCESS", label: "Success" },
-];
+const STATUS_OPTIONS = computed(() => [
+  { value: "", label: T.value.allStatuses },
+  { value: "BLOCKED,CRITICAL", label: T.value.attacksFilter },
+  { value: "FAILED", label: T.value.failedFilter },
+  { value: "SUCCESS", label: T.value.successFilter },
+]);
 
 async function loadAll() {
   loading.value = true;
@@ -86,38 +90,38 @@ function formatTime(iso) {
 <template>
   <div class="security">
     <div class="security-head">
-      <h2><span class="ic" v-html="ICONS.shield"></span> Cybersecurity</h2>
+      <h2><span class="ic" v-html="ICONS.shield"></span> {{ T.title }}</h2>
       <button class="refresh" @click="loadAll" :disabled="loading">
-        {{ loading ? "Loading…" : "Refresh" }}
+        {{ loading ? C.loading : C.refresh }}
       </button>
     </div>
 
     <!-- KPI cards -->
     <div v-if="overview" class="sec-kpis">
       <div class="sec-kpi">
-        <div class="sec-kpi-label">Events (24h)</div>
+        <div class="sec-kpi-label">{{ T.events24h }}</div>
         <div class="sec-kpi-value">{{ overview.kpis.events_24h }}</div>
       </div>
       <div class="sec-kpi warn">
-        <div class="sec-kpi-label">Failed logins (24h)</div>
+        <div class="sec-kpi-label">{{ T.failedLogins24h }}</div>
         <div class="sec-kpi-value">{{ overview.kpis.failed_logins_24h }}</div>
       </div>
       <div class="sec-kpi critical">
-        <div class="sec-kpi-label">Attacks blocked (24h)</div>
+        <div class="sec-kpi-label">{{ T.attacks24h }}</div>
         <div class="sec-kpi-value">{{ overview.kpis.attacks_24h }}</div>
       </div>
       <div class="sec-kpi">
-        <div class="sec-kpi-label">Banned accounts</div>
+        <div class="sec-kpi-label">{{ T.bannedAccounts }}</div>
         <div class="sec-kpi-value">{{ overview.kpis.total_bans }}</div>
       </div>
     </div>
 
     <!-- Chart : attacks & failed logins, last 14 days -->
     <div v-if="overview && chartData.length" class="sec-chart-card">
-      <div class="sec-chart-title">Attacks &amp; failed logins — last 14 days</div>
+      <div class="sec-chart-title">{{ T.chartTitle }}</div>
       <div class="sec-legend">
-        <span class="legend-item"><span class="dot critical"></span> Attacks blocked</span>
-        <span class="legend-item"><span class="dot warn"></span> Failed logins</span>
+        <span class="legend-item"><span class="dot critical"></span> {{ T.attacksBlocked }}</span>
+        <span class="legend-item"><span class="dot warn"></span> {{ T.failedLogins }}</span>
       </div>
       <svg :viewBox="`0 0 ${chartWidth} ${chartHeight}`" class="sec-chart" preserveAspectRatio="none">
         <line
@@ -158,15 +162,15 @@ function formatTime(iso) {
         :style="{ left: hovered.cx + 'px', top: hovered.cy + 'px' }"
       >
         <strong>{{ hovered.day }}</strong>
-        <div>Attacks: {{ hovered.attacks }}</div>
-        <div>Failed logins: {{ hovered.failed_logins }}</div>
+        <div>{{ T.attacksBlocked }}: {{ hovered.attacks }}</div>
+        <div>{{ T.failedLogins }}: {{ hovered.failed_logins }}</div>
       </div>
     </div>
 
     <!-- Events table -->
     <div class="sec-events-card">
       <div class="sec-events-head">
-        <div class="sec-chart-title">Recent security events</div>
+        <div class="sec-chart-title">{{ T.recentEvents }}</div>
         <select v-model="statusFilter" @change="loadAll">
           <option v-for="opt in STATUS_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
         </select>
@@ -175,12 +179,12 @@ function formatTime(iso) {
         <table class="sec-table">
           <thead>
             <tr>
-              <th>Time</th>
-              <th>User</th>
-              <th>Role</th>
-              <th>Action</th>
-              <th>Status</th>
-              <th>Details</th>
+              <th>{{ T.time }}</th>
+              <th>{{ T.user }}</th>
+              <th>{{ T.role }}</th>
+              <th>{{ T.action }}</th>
+              <th>{{ T.status }}</th>
+              <th>{{ T.details }}</th>
             </tr>
           </thead>
           <tbody>
@@ -193,7 +197,7 @@ function formatTime(iso) {
               <td class="details">{{ e.details }}</td>
             </tr>
             <tr v-if="!loading && events.length === 0">
-              <td colspan="6" class="empty">No events found.</td>
+              <td colspan="6" class="empty">{{ T.noEvents }}</td>
             </tr>
           </tbody>
         </table>

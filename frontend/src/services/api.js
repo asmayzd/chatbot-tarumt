@@ -41,6 +41,11 @@ export const api = {
     return handle(res);
   },
 
+  async biOverview() {
+    const res = await fetch(`${BASE_URL}/bi/overview`, { headers: authHeaders() });
+    return handle(res);
+  },
+
   async ask(question, sessionId) {
     const res = await fetch(`${BASE_URL}/ask`, {
       method: "POST",

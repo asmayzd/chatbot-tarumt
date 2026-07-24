@@ -36,6 +36,7 @@ from src.security.guardrails import detect_prompt_injection, detect_cross_user_v
 from src.security import ai_guardrails
 from src.security import security_dashboard
 from src.data_science.data_cleaner import DataCleaner
+from src.data_science.feature_engineer import FeatureEngineer
 from src.bi_analytics.kpi_analyzer import KPIAnalyzer
 from src.bi_analytics.anomaly_detector import AnomalyDetector
 from src.bi_analytics.sql_agent import SQLAgent
@@ -135,8 +136,9 @@ def load_components():
     conn = get_db_connection()
     try:
         query = """
-            SELECT 
+            SELECT
                 o.order_id, o.order_date, o.ship_date, o.ship_mode, o.customer_id,
+                o.market, o.region, o.country,
                 c.customer_name, c.segment,
                 oi.sales, oi.quantity, oi.discount, oi.profit,
                 p.product_id, p.product_name, p.category, p.sub_category
@@ -150,9 +152,12 @@ def load_components():
         conn.close()
 
     df_clean = DataCleaner(df).clean()
+    # Ajoute shipping_delay_days / profit_margin, utilisés par KPIAnalyzer et
+    # AnomalyDetector pour les stats de livraison et de marge du tableau BI.
+    df_features = FeatureEngineer(df_clean).add_shipping_delay().add_profit_margin().get_featured_data()
 
-    KPI = KPIAnalyzer(df_clean)
-    ANOMALY = AnomalyDetector(df_clean)
+    KPI = KPIAnalyzer(df_features)
+    ANOMALY = AnomalyDetector(df_features)
 
     # --- Configuration du SQLAgent ---
     if "GEMINI_API_KEY" in os.environ:
@@ -333,6 +338,55 @@ def kpis(authorization: str = Header(None)):
         "total_sales": float(KPI.total_sales()),
         "total_profit": float(KPI.total_profit()),
         "anomalies": int(nb_anomalies),
+    }
+
+
+def _series_to_points(series: pd.Series, label_key: str, value_key: str) -> list[dict]:
+    """Turn a pandas Series (indexed by category) into [{label, value}, ...] for chart JSON."""
+    return [
+        {label_key: str(idx), value_key: round(float(val), 2)}
+        for idx, val in series.items()
+    ]
+
+
+@app.get("/bi/overview")
+def bi_overview(authorization: str = Header(None)):
+    """Full BI dashboard: KPIs + chart-ready breakdowns. Restricted to analyst / admin."""
+    token = (authorization or "").replace("Bearer ", "")
+    session = get_session(token)
+
+    if session["role"] not in BI_ALLOWED_ROLES:
+        raise HTTPException(status_code=403, detail="BI dashboard reserved for analyst / admin.")
+
+    main_kpis = KPI.get_main_kpis()
+    report = ANOMALY.get_anomaly_report()
+
+    products_by_profit = pd.concat(
+        [KPI.top_products_by_profit(5), KPI.worst_products_by_profit(5)]
+    ).sort_values(ascending=False)
+
+    return {
+        "kpis": {
+            "total_sales": float(main_kpis["total_sales"]),
+            "total_profit": float(main_kpis["total_profit"]),
+            "total_quantity": int(main_kpis["total_quantity"]),
+            "average_discount": float(main_kpis["average_discount"]),
+            "average_profit_margin": float(main_kpis["average_profit_margin"]),
+            "average_shipping_delay": float(main_kpis["average_shipping_delay"]),
+        },
+        "sales_by_country": _series_to_points(KPI.sales_by_country().head(10), "country", "sales"),
+        "sales_by_market": _series_to_points(KPI.sales_by_market(), "market", "sales"),
+        "profit_by_category": _series_to_points(KPI.profit_by_category(), "category", "profit"),
+        "top_products_by_sales": _series_to_points(KPI.top_products_by_sales(8), "product", "sales"),
+        "products_by_profit": _series_to_points(products_by_profit, "product", "profit"),
+        "anomalies": {
+            "high_sales_negative_profit_count": report["high_sales_negative_profit_count"],
+            "high_discount_negative_profit_count": report["high_discount_negative_profit_count"],
+            "long_shipping_delay_count": report["long_shipping_delay_count"],
+            "unusual_sales_values_count": report["unusual_sales_values_count"],
+            "unprofitable_products": _series_to_points(report["unprofitable_products"], "product", "profit"),
+            "low_margin_countries": _series_to_points(report["low_margin_countries"], "country", "margin"),
+        },
     }
 
 

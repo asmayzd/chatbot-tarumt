@@ -1,19 +1,23 @@
 <script setup>
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import { api } from "../services/api.js";
 import { ICONS } from "../components/Icons.js";
 import Mascot from "../components/Mascot.vue";
 import SecurityDashboard from "../components/SecurityDashboard.vue";
+import BiDashboard from "../components/BiDashboard.vue";
+import { t } from "../i18n.js";
 
 const props = defineProps({ user: Object });
 const emit = defineEmits(["logout"]);
 
-const activeView = ref("chat"); // "chat" | "security" (security: admin only)
+const activeView = ref("chat"); // "chat" | "security" (admin only) | "bi" (admin / analyst)
+
+const T = computed(() => t.value.chat);
 
 const kpis = ref(null);
 const suggestions = ref([]);
 const messages = ref([
-  { role: "assistant", content: "Hello! Ask me about your data." },
+  { role: "assistant", content: T.value.welcome },
 ]);
 const input = ref("");
 const loading = ref(false);
@@ -104,7 +108,7 @@ async function openSession(sessionId) {
     currentSessionId.value = sessionId;
     messages.value = res.messages.length
       ? res.messages
-      : [{ role: "assistant", content: "Hello! Ask me about your data." }];
+      : [{ role: "assistant", content: T.value.welcome }];
   } catch (e) {
     /* ignore */
   }
@@ -112,7 +116,7 @@ async function openSession(sessionId) {
 
 function startNewChat() {
   currentSessionId.value = null;
-  messages.value = [{ role: "assistant", content: "Hello! Ask me about your data." }];
+  messages.value = [{ role: "assistant", content: T.value.welcome }];
 }
 
 async function removeSession(sessionId, evt) {
@@ -211,11 +215,20 @@ function money(v) {
         <div class="role">{{ user.role }}</div>
       </div>
       <div class="status">
-        <span class="row-ic"><span class="ic" v-html="ICONS.chart"></span> BI Analytics:</span>
+        <span class="row-ic"><span class="ic" v-html="ICONS.chart"></span> {{ T.biAnalytics }}:</span>
         <span :class="user.can_view_bi ? 'ok' : 'no'">
-          {{ user.can_view_bi ? "Granted" : "Restricted" }}
+          {{ user.can_view_bi ? T.granted : T.restricted }}
         </span>
       </div>
+
+      <button
+        v-if="user.can_view_bi"
+        :class="['nav-toggle', 'bi', { active: activeView === 'bi' }]"
+        @click="activeView = activeView === 'bi' ? 'chat' : 'bi'"
+      >
+        <span class="ic" v-html="ICONS.chart"></span>
+        {{ activeView === 'bi' ? T.backToChat : T.biAnalytics }}
+      </button>
 
       <button
         v-if="user.role === 'admin'"
@@ -223,10 +236,10 @@ function money(v) {
         @click="activeView = activeView === 'security' ? 'chat' : 'security'"
       >
         <span class="ic" v-html="ICONS.shield"></span>
-        {{ activeView === 'security' ? 'Back to chat' : 'Cybersecurity' }}
+        {{ activeView === 'security' ? T.backToChat : T.cybersecurity }}
       </button>
 
-      <button class="new-chat" @click="startNewChat">+ New chat</button>
+      <button class="new-chat" @click="startNewChat">{{ T.newChat }}</button>
 
       <div class="sessions">
         <button
@@ -239,11 +252,11 @@ function money(v) {
           <span class="session-del" @click="removeSession(s.session_id, $event)">&times;</span>
         </button>
         <p v-if="!sessionsLoading && sessions.length === 0" class="no-sessions">
-          No saved conversations yet.
+          {{ T.noSessions }}
         </p>
       </div>
 
-      <button class="logout" @click="logout"><span class="ic" v-html="ICONS.logout"></span> Log out</button>
+      <button class="logout" @click="logout"><span class="ic" v-html="ICONS.logout"></span> {{ T.logout }}</button>
     </aside>
 
     <!-- Main -->
@@ -251,9 +264,9 @@ function money(v) {
       <template v-if="activeView === 'chat'">
       <div class="hero">
         <div class="hero-text">
-          <h1>TARUMT Smart Assistant</h1>
-          <p>Ask about sales, profits and delivery times in natural language.</p>
-          <span class="badge">Connected: {{ user.customer_name }} — {{ user.role }}</span>
+          <h1>{{ T.heroTitle }}</h1>
+          <p>{{ T.heroDesc }}</p>
+          <span class="badge">{{ T.connected }}: {{ user.customer_name }} — {{ user.role }}</span>
         </div>
         <Mascot :state="mascotState" :size="140" class="hero-mascot" />
       </div>
@@ -262,22 +275,22 @@ function money(v) {
       <div v-if="kpis" class="kpis">
         <div class="kpi">
           <div class="kpi-ic sales" v-html="ICONS.sales"></div>
-          <div class="kpi-label">Total Sales</div>
+          <div class="kpi-label">{{ T.totalSales }}</div>
           <div class="kpi-value">{{ money(kpis.total_sales) }}</div>
         </div>
         <div class="kpi">
           <div class="kpi-ic profit" v-html="ICONS.profit"></div>
-          <div class="kpi-label">Total Profit</div>
+          <div class="kpi-label">{{ T.totalProfit }}</div>
           <div class="kpi-value">{{ money(kpis.total_profit) }}</div>
         </div>
         <div class="kpi">
           <div class="kpi-ic anomaly" v-html="ICONS.anomaly"></div>
-          <div class="kpi-label">Anomalies</div>
+          <div class="kpi-label">{{ T.anomalies }}</div>
           <div class="kpi-value">{{ kpis.anomalies.toLocaleString() }}</div>
         </div>
       </div>
       <div v-else-if="!user.can_view_bi" class="restricted">
-        The BI dashboard is reserved for analyst / admin roles.
+        {{ T.biRestricted }}
       </div>
 
       <!-- Chat -->
@@ -290,7 +303,7 @@ function money(v) {
               class="caret"
             ></span>
             <details v-if="m.sql" class="sql">
-              <summary><span class="ic" v-html="ICONS.sql"></span> SQL query used</summary>
+              <summary><span class="ic" v-html="ICONS.sql"></span> {{ T.sqlUsed }}</summary>
               <pre>{{ m.sql }}</pre>
             </details>
           </div>
@@ -305,10 +318,12 @@ function money(v) {
 
       <!-- Input -->
       <div class="input-bar">
-        <input v-model="input" placeholder="Type your question…" @keyup.enter="send()" />
-        <button @click="send()" :disabled="loading">Send</button>
+        <input v-model="input" :placeholder="T.inputPlaceholder" @keyup.enter="send()" />
+        <button @click="send()" :disabled="loading">{{ T.send }}</button>
       </div>
       </template>
+
+      <BiDashboard v-else-if="activeView === 'bi' && user.can_view_bi" />
 
       <SecurityDashboard v-else-if="activeView === 'security' && user.role === 'admin'" />
     </main>
@@ -391,6 +406,10 @@ function money(v) {
 }
 .nav-toggle:hover { background: #fef2f2; }
 .nav-toggle.active { background: #dc2626; color: #fff; border-color: #dc2626; }
+
+.nav-toggle.bi { border-color: #c7d2fe; color: #4f46e5; }
+.nav-toggle.bi:hover { background: #eef2ff; }
+.nav-toggle.bi.active { background: #4f46e5; color: #fff; border-color: #4f46e5; }
 
 .sessions {
   flex: 1;
