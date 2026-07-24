@@ -509,6 +509,8 @@ function money(v) {
   border-radius: 16px;
   background: #f3f4f6;
   overflow-wrap: anywhere;   /* une longue valeur ne casse plus la mise en page */
+  white-space: pre-line;     /* respecte les retours à la ligne envoyés par l'IA (listes numérotées) */
+  line-height: 1.55;
 }
 .msg.user .bubble { background: #4f46e5; color: #fff; }
 
