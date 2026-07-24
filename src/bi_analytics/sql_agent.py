@@ -1,5 +1,7 @@
 import re
-import sqlite3
+import configparser
+import os
+import psycopg2
 import pandas as pd
 
 
@@ -19,22 +21,14 @@ class SQLAgent:
     """
 
     FORBIDDEN_KEYWORDS = [
-        "insert", "update", "delete", "drop", "alter", "create",
+        "insert", "delete", "drop", "alter", "create",
         "replace", "truncate", "attach", "detach", "pragma",
         "vacuum", "reindex", "grant", "revoke",
     ]
 
-    # Tables/views an analyst may query. `customers` is replaced by an
-    # anonymised view: analysts need segments, not identities.
     ANALYST_TABLES = ["customers_anon", "products", "orders", "order_items"]
-
-    # An admin may additionally read the nominative customer table.
-    ADMIN_TABLES = ["customers", "products", "orders", "order_items"]
-
-    # Views a `user` may query (created per session, already filtered).
+    ADMIN_TABLES = ["customers", "products", "orders", "order_items", "chat_messages"]
     SCOPED_VIEWS = ["my_orders", "my_order_items"]
-
-    # Columns carrying personal data. Never exposed below the admin role.
     PII_COLUMNS = ["customer_name"]
 
     def __init__(self, db_path: str = "data/superstore_bi.db",
@@ -43,26 +37,62 @@ class SQLAgent:
         self.model = model
         self.connection = None
         self.client = None
-        self._scoped_for = None  # customer_id the views are currently built for
+        self._scoped_for = None
 
     # ------------------------------------------------------------------
-    # Setup
+    # Setup & Connection Management (Auto-Reconnect)
     # ------------------------------------------------------------------
+    def get_connection(self):
+        """Vérifie et rétablit la connexion PostgreSQL si elle est fermée."""
+        if self.connection is None or getattr(self.connection, 'closed', 1) != 0:
+            print("🔄 Reconnexion à PostgreSQL/Supabase en cours...")
+            self.connect_database()
+        return self.connection
+
     def connect_database(self):
-        """Open a connection to the persistent database (Streamlit-safe)."""
-        self.connection = sqlite3.connect(self.db_path, check_same_thread=False)
-        self._build_anon_view()
-        return self
+        """Se connecte directement à PostgreSQL / Supabase."""
+        try:
+            config = configparser.ConfigParser()
+            config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "config.ini"))
+            if not os.path.exists(config_path):
+                config_path = "config.ini"
+            config.read(config_path)
+
+            db_host = config.get("postgresql", "host", fallback="127.0.0.1")
+            db_port = config.get("postgresql", "port", fallback="5432")
+            db_name = config.get("postgresql", "database", fallback="postgres")
+            db_user = config.get("postgresql", "user", fallback="postgres")
+            db_pass = config.get("postgresql", "password", fallback="postgres")
+
+            self.connection = psycopg2.connect(
+                host=db_host,
+                port=db_port,
+                dbname=db_name,
+                user=db_user,
+                password=db_pass
+            )
+            print("✅ SQLAgent connecté à PostgreSQL/Supabase avec succès !")
+            return self
+        except Exception as e:
+            print(f"❌ Erreur connexion PostgreSQL SQLAgent: {e}")
+            raise e
 
     def _build_anon_view(self):
         """Expose customer segments without the nominative column."""
-        cursor = self.connection.cursor()
-        cursor.execute("DROP VIEW IF EXISTS customers_anon")
-        cursor.execute("""
-            CREATE TEMP VIEW customers_anon AS
-            SELECT customer_id, segment FROM customers
-        """)
-        self.connection.commit()
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("DROP VIEW IF EXISTS customers_anon")
+            cursor.execute("""
+                CREATE TEMP VIEW customers_anon AS
+                SELECT customer_id, segment FROM customers
+            """)
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            cursor.close()
 
     def init_gemini(self):
         """Initialise the Gemini client (reads GEMINI_API_KEY from env)."""
@@ -77,47 +107,45 @@ class SQLAgent:
     # Row-level security
     # ------------------------------------------------------------------
     def build_scoped_views(self, customer_id: str):
-        """
-        (Re)create views restricted to a single customer.
-
-        Views are temporary and rebuilt whenever the customer changes, so one
-        session can never read another customer's rows.
-        """
-        if self.connection is None:
-            raise ValueError("Database not connected.")
+        """(Re)create views restricted to a single customer."""
+        conn = self.get_connection()
 
         if self._scoped_for == customer_id:
-            return  # already built for this customer
+            return
 
-        cursor = self.connection.cursor()
-
-        # Parameter binding is not allowed in CREATE VIEW, so the id is
-        # validated against a strict pattern before being interpolated.
         if not re.fullmatch(r"[A-Za-z0-9\-_]{1,32}", customer_id or ""):
             raise ValueError("Invalid customer identifier.")
 
-        cursor.execute("DROP VIEW IF EXISTS my_order_items")
-        cursor.execute("DROP VIEW IF EXISTS my_orders")
+        cursor = conn.cursor()
+        try:
+            cursor.execute("DROP VIEW IF EXISTS my_order_items")
+            cursor.execute("DROP VIEW IF EXISTS my_orders")
 
-        cursor.execute(f"""
-            CREATE TEMP VIEW my_orders AS
-            SELECT order_id, order_date, ship_date, ship_mode,
-                   market, region, country, city, state
-            FROM orders
-            WHERE customer_id = '{customer_id}'
-        """)
+            cursor.execute(f"""
+                CREATE TEMP VIEW my_orders AS
+                SELECT order_id, order_date, ship_date, ship_mode,
+                       market, region, country, city, state
+                FROM orders
+                WHERE customer_id = '{customer_id}'
+            """)
 
-        cursor.execute(f"""
-            CREATE TEMP VIEW my_order_items AS
-            SELECT oi.order_id, oi.product_id, oi.sales, oi.quantity,
-                   oi.discount, oi.profit, oi.shipping_cost
-            FROM order_items oi
-            JOIN orders o ON oi.order_id = o.order_id
-            WHERE o.customer_id = '{customer_id}'
-        """)
-
-        self.connection.commit()
-        self._scoped_for = customer_id
+            cursor.execute(f"""
+                CREATE TEMP VIEW my_order_items AS
+                SELECT oi.order_id, oi.product_id, p.product_name, oi.sales, oi.quantity,
+                       oi.discount, oi.profit, oi.shipping_cost
+                FROM order_items oi
+                JOIN orders o ON oi.order_id = o.order_id
+                LEFT JOIN products p ON oi.product_id = p.product_id
+                WHERE o.customer_id = '{customer_id}'
+            """)
+            
+            conn.commit()
+            self._scoped_for = customer_id
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            cursor.close()
 
     def _tables_for(self, role: str):
         if role == "user":
@@ -129,28 +157,42 @@ class SQLAgent:
     # ------------------------------------------------------------------
     # Schema introspection
     # ------------------------------------------------------------------
-    def get_schema_description(self, role: str = "analyst") -> str:
-        """Describe only the tables/views this role is allowed to query."""
-        if self.connection is None:
-            raise ValueError("Database not connected.")
+    def get_schema_description(self, role: str = "admin") -> str:
+        """Retourne la description des tables adaptées à PostgreSQL."""
+        conn = self.get_connection()
+        schema_desc = ""
+        
+        if role == "user":
+            tables = ["my_orders", "my_order_items"]
+        elif role == "admin":
+            tables = ["customers", "orders", "order_items", "products", "chat_messages"]
+        else:
+            tables = ["customers_anon", "orders", "order_items", "products"]
+            
+        cursor = conn.cursor()
 
-        cursor = self.connection.cursor()
-        lines = []
+        for table in tables:
+            schema_desc += f"\nTable: {table}\nColumns:\n"
+            try:
+                cursor.execute("""
+                    SELECT column_name, data_type 
+                    FROM information_schema.columns 
+                    WHERE table_name = %s;
+                """, (table,))
+                columns = cursor.fetchall()
 
-        for table in self._tables_for(role):
-            cursor.execute(f"PRAGMA table_info({table})")
-            columns = cursor.fetchall()
-            if not columns:
-                continue
+                if columns:
+                    for col in columns:
+                        schema_desc += f" - {col[0]} ({col[1]})\n"
+                else:
+                    cursor.execute(f"PRAGMA table_info({table})")
+                    for col in cursor.fetchall():
+                        schema_desc += f" - {col[1]} ({col[2]})\n"
+            except Exception:
+                conn.rollback()
 
-            cols = [f"{c[1]} ({c[2] or 'TEXT'})" for c in columns]
-            lines.append(f"Table {table}: " + ", ".join(cols))
-
-            cursor.execute(f"PRAGMA foreign_key_list({table})")
-            for fk in cursor.fetchall():
-                lines.append(f"  - {table}.{fk[3]} references {fk[2]}.{fk[4]}")
-
-        return "\n".join(lines)
+        cursor.close()
+        return schema_desc
 
     # ------------------------------------------------------------------
     # Prompting
@@ -160,35 +202,39 @@ class SQLAgent:
 
         if role == "user":
             context = (
-                "These views already contain ONLY the current customer's own "
-                "orders. Never mention other customers. Do not add any filter "
-                "on customer_id: the restriction is already applied."
+                "You are querying for the logged-in customer. "
+                "You MUST query strictly from 'my_orders' or 'my_order_items'. "
+                "Do NOT reference 'orders', 'order_items' or 'customers' base tables. "
+                "The restriction on customer_id is ALREADY applied inside the view."
+            )
+        elif role == "admin":
+            context = (
+                "As an admin, you can read and UPDATE tables when requested "
+                "(e.g., updating customer names, order details). "
+                "For questions about common or most asked questions, query column 'message' from 'chat_messages' WHERE sender = 'user'. "
+                "Join through order_id, product_id and customer_id when needed."
             )
         else:
             context = (
-                "Numeric measures (sales, profit, quantity, discount) live in "
-                "order_items. Country, city, region, market and dates live in "
-                "orders. Category and product_name live in products. Segment "
-                "lives in customers_anon, which contains no customer names. "
-                "Customer identities are confidential and must never be "
-                "queried or returned. Join through order_id, product_id and "
-                "customer_id when needed."
+                "CRITICAL COLUMN RULES:\n"
+                "- Total sales must be calculated using SUM(oi.sales) directly.\n"
+                "- NEVER invent a column named 'price'. There is no 'price' column in order_items.\n"
+                "- Country is in 'orders.country'.\n"
+                "- Always use GROUP BY when using aggregate functions like SUM()."
             )
 
         return f"""
-You are an expert data analyst who writes SQLite queries.
+You are an expert data analyst and database administrator.
 
-Database schema (relational, use JOINs when the answer spans several tables):
+Database schema:
 {schema}
 
 {context}
 
 Rules:
-1. Write ONE single valid SQLite SELECT query that answers the question.
-2. Only use the tables and columns listed above. Never reference any other table.
+1. Write ONE single valid SQL query (SELECT or UPDATE) that answers/performs the question.
+2. Only use the tables and columns listed above. Never invent non-existent columns like 'price'.
 3. Output ONLY the raw SQL query: no explanation, no comment, no markdown.
-4. Never modify data: only SELECT statements are allowed.
-5. Use LIMIT when the user asks for "top", "best" or "worst" results.
 
 User question: "{question}"
 
@@ -202,7 +248,6 @@ SQL query:
         sql = re.sub(r"^```", "", sql).strip()
         sql = re.sub(r"```$", "", sql).strip()
 
-        # Drop any leading "-- comment" lines the model may have added.
         lines = [ln for ln in sql.splitlines() if not ln.strip().startswith("--")]
         sql = "\n".join(lines).strip()
 
@@ -211,23 +256,19 @@ SQL query:
     # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------
-    # Human-readable reasons, so the interface can explain *why* a query failed.
     REASON_READONLY = "readonly"
     REASON_SCOPE = "scope"
     REASON_PII = "pii"
+    REASON_DATE_UPDATE = "date_update"
 
     def check_sql(self, sql: str, role: str = "analyst"):
-        """
-        Validate a generated query.
-
-        Returns (True, None) when the query is safe, otherwise (False, reason)
-        where reason is one of REASON_READONLY / REASON_SCOPE / REASON_PII.
-        """
+        """Validate a generated query."""
         lowered = sql.lower().strip()
 
-        # A read-only query starts with SELECT, or with a WITH clause (CTE)
-        # that ultimately feeds a SELECT. Writes are caught below.
-        if not (lowered.startswith("select") or lowered.startswith("with")):
+        is_select = lowered.startswith("select") or lowered.startswith("with")
+        is_update = lowered.startswith("update") and role == "admin"
+
+        if not (is_select or is_update):
             return False, self.REASON_READONLY
 
         if ";" in sql.strip().rstrip(";"):
@@ -237,7 +278,6 @@ SQL query:
             if re.search(rf"\b{keyword}\b", lowered):
                 return False, self.REASON_READONLY
 
-        # Only an admin may read nominative customer data.
         if role != "admin":
             if re.search(r"\bcustomers\b", lowered):
                 return False, self.REASON_PII
@@ -245,9 +285,6 @@ SQL query:
                 if re.search(rf"\b{column}\b", lowered):
                     return False, self.REASON_PII
 
-        # Allowlist: a `user` may only read the views scoped to their own rows.
-        # Anything not explicitly permitted is refused, so a table added to the
-        # database later cannot silently become readable.
         if role == "user":
             referenced = re.findall(r"\b(?:from|join)\s+([a-z_][a-z0-9_]*)", lowered)
             allowed = {v.lower() for v in self.SCOPED_VIEWS}
@@ -257,26 +294,22 @@ SQL query:
         return True, None
 
     def is_safe_sql(self, sql: str, role: str = "analyst") -> bool:
-        """Backward-compatible boolean wrapper around check_sql()."""
         safe, _ = self.check_sql(sql, role)
         return safe
 
     def _denial_message(self, reason: str, role: str) -> str:
-        """Explain the refusal in terms that match the user's role."""
         if reason == self.REASON_PII:
             return (
                 "Access Denied: customer personal data is confidential. "
-                "Your role can analyse aggregated figures (segments, regions, "
-                "categories) but cannot access customer identities."
+                "Your role can analyse aggregated figures but cannot access customer identities."
             )
         if reason == self.REASON_SCOPE:
             return (
-                "Access Denied: you can only query your own orders. "
-                "Company-wide data is restricted to analysts and administrators."
+                "Access Denied: you can only query your own orders."
             )
         return (
-            "Access Denied: the generated query was rejected because only "
-            "read-only queries are allowed."
+            "Access Denied: the generated query was rejected because "
+            "this operation is not allowed for your role."
         )
 
     # ------------------------------------------------------------------
@@ -293,24 +326,34 @@ SQL query:
         return self._clean_sql(response.text)
 
     def run_sql(self, sql: str) -> pd.DataFrame:
-        if self.connection is None:
-            raise ValueError("Database not connected.")
-        return pd.read_sql_query(sql, self.connection)
+        """Exécute les SELECT ainsi que les UPDATE avec gestion automatique du COMMIT/ROLLBACK."""
+        conn = self.get_connection()
+        lowered = sql.lower().strip()
+
+        try:
+            if lowered.startswith("update"):
+                cursor = conn.cursor()
+                cursor.execute(sql)
+                conn.commit()
+                rows_affected = cursor.rowcount
+                cursor.close()
+                return pd.DataFrame([{"status": "success", "message": f"Successfully updated {rows_affected} row(s)."}])
+            else:
+                df = pd.read_sql_query(sql, conn)
+                return df
+        except Exception as e:
+            # Nettoie la transaction bloquée en cas d'erreur
+            conn.rollback()
+            raise e
 
     def ask(self, question: str, role: str = "analyst",
             customer_id: str = None) -> dict:
-        """
-        Full pipeline: scope -> SQL -> security check -> execution.
-
-        For the `user` role a customer_id is mandatory: without it there is
-        nothing to scope the views to, so the request is refused.
-        """
+        """Full pipeline: scope -> SQL -> security check -> execution."""
         if role == "user":
             if not customer_id:
                 return {
                     "question": question, "sql": None, "result": None,
-                    "error": ("Access Denied: this session has no customer scope, "
-                              "so no personal order data can be retrieved."),
+                    "error": ("Access Denied: this session has no customer scope."),
                 }
             self.build_scoped_views(customer_id)
 
@@ -329,8 +372,23 @@ SQL query:
             result = self.run_sql(sql)
             error = None
         except Exception as exc:
-            result = None
-            error = f"SQL execution failed: {exc}"
+            # Réinitialise la connexion PostgreSQL si elle a planté
+            try:
+                self.get_connection().rollback()
+            except Exception:
+                pass
+
+            if "closed" in str(exc).lower() or "terminated" in str(exc).lower():
+                try:
+                    self.connection = None
+                    result = self.run_sql(sql)
+                    error = None
+                except Exception as retry_exc:
+                    result = None
+                    error = f"SQL execution failed: {retry_exc}"
+            else:
+                result = None
+                error = f"SQL execution failed: {exc}"
 
         return {"question": question, "sql": sql, "result": result, "error": error}
 
@@ -347,11 +405,15 @@ Here is the SQL query result:
 {preview}
 
 Write a short, direct answer to the question based on this result.
-Detect the language of the user question and reply in that same
-language. Be concise and go straight to the data point. No filler.
+Detect the language of the user question and reply in that same language.
+
+STRICT FORMATTING RULES:
+- Never use markdown syntax or asterisks (NO **, NO *, NO #, NO _).
+- Return plain text ONLY.
+- If listing multiple items, put EACH item on a new line starting with a number (e.g. 1. Item A \n 2. Item B).
 """.strip()
 
         response = self.client.models.generate_content(
             model=self.model, contents=prompt,
         )
-        return response.text.strip()
+        return response.text.replace("*", "").strip()
