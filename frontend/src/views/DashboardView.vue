@@ -145,11 +145,13 @@ async function send(question) {
 
   let fullText;
   let sql = null;
+  let blocked = false;
 
   try {
     const res = await api.ask(q, currentSessionId.value);
     fullText = res.content;
     sql = res.sql;
+    blocked = !!res.blocked;
     if (res.session_id && res.session_id !== currentSessionId.value) {
       currentSessionId.value = res.session_id;
     }
@@ -159,6 +161,14 @@ async function send(question) {
   }
 
   loading.value = false;
+
+  // Une alerte de sécurité s'affiche d'un coup, sans effet machine à écrire :
+  // ce n'est pas une réponse conversationnelle, elle doit se voir immédiatement.
+  if (blocked) {
+    messages.value.push({ role: "assistant", content: fullText, sql: null, blocked: true });
+    mascotState.value = "idle";
+    return;
+  }
 
   // Bulle vide, puis le texte s'écrit dedans pendant que la mascotte parle.
   messages.value.push({ role: "assistant", content: "", sql: null });
@@ -272,8 +282,9 @@ function money(v) {
 
       <!-- Chat -->
       <div class="chat">
-        <div v-for="(m, i) in messages" :key="i" :class="['msg', m.role]">
+        <div v-for="(m, i) in messages" :key="i" :class="['msg', m.role, { blocked: m.blocked }]">
           <div class="bubble" @click="skipTyping">
+            <span v-if="m.blocked" class="alert-ic" v-html="ICONS.shield"></span>
             {{ m.content }}<span
               v-if="typing && i === messages.length - 1"
               class="caret"
@@ -481,6 +492,36 @@ function money(v) {
   overflow-wrap: anywhere;   /* une longue valeur ne casse plus la mise en page */
 }
 .msg.user .bubble { background: #4f46e5; color: #fff; }
+
+/* Alerte de sécurité : visuellement distincte d'une réponse normale,
+   sans être criarde (pas d'animation en boucle, pas de son). */
+.msg.blocked .bubble {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #b91c1c;
+  font-weight: 600;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  animation: alert-in 0.35s ease;
+}
+.alert-ic {
+  flex-shrink: 0;
+  display: inline-flex;
+  margin-top: 1px;
+  color: #dc2626;
+}
+@keyframes alert-in {
+  0%   { transform: translateX(0); }
+  20%  { transform: translateX(-4px); }
+  40%  { transform: translateX(4px); }
+  60%  { transform: translateX(-3px); }
+  80%  { transform: translateX(2px); }
+  100% { transform: translateX(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .msg.blocked .bubble { animation: none; }
+}
 
 .sql { margin-top: 8px; }
 .sql summary {
