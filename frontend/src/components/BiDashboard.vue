@@ -3,6 +3,8 @@ import { ref, onMounted, computed } from "vue";
 import { api } from "../services/api.js";
 import { ICONS } from "./Icons.js";
 import { t } from "../i18n.js";
+import TrendCharts from "./TrendCharts.vue";
+import BreakdownCard from "./BreakdownCard.vue";
 
 const T = computed(() => t.value.bi);
 const C = computed(() => t.value.common);
@@ -38,16 +40,6 @@ function days(v) {
   return v.toFixed(1) + " d";
 }
 
-// Single-hue "more sales/quantity" bars: length only, sign is never negative here.
-function seqBars(points, valueKey) {
-  const max = Math.max(1, ...points.map((p) => Math.abs(p[valueKey])));
-  return points.map((p) => ({
-    label: p.country || p.market || p.category || p.product,
-    value: p[valueKey],
-    widthPct: (Math.abs(p[valueKey]) / max) * 100,
-  }));
-}
-
 // Two-hue "gain vs loss" bars: color encodes sign, length encodes magnitude.
 function divBars(points, valueKey) {
   const max = Math.max(1, ...points.map((p) => Math.abs(p[valueKey])));
@@ -59,10 +51,6 @@ function divBars(points, valueKey) {
   }));
 }
 
-const salesByCountry = computed(() => (data.value ? seqBars(data.value.sales_by_country, "sales") : []));
-const salesByMarket = computed(() => (data.value ? seqBars(data.value.sales_by_market, "sales") : []));
-const topProductsBySales = computed(() => (data.value ? seqBars(data.value.top_products_by_sales, "sales") : []));
-const profitByCategory = computed(() => (data.value ? divBars(data.value.profit_by_category, "profit") : []));
 const productsByProfit = computed(() => (data.value ? divBars(data.value.products_by_profit, "profit") : []));
 const lowMarginCountries = computed(() =>
   data.value ? divBars(data.value.anomalies.low_margin_countries, "margin") : []
@@ -114,64 +102,21 @@ const unprofitableProducts = computed(() =>
         </div>
       </div>
 
+      <!-- Monthly trend curves + AI interpretation -->
+      <TrendCharts />
+
       <!-- Sequential bar charts -->
       <div class="bi-grid">
-        <div class="bi-card">
-          <div class="bi-card-title">{{ T.salesByCountry }}</div>
-          <div class="bar-list">
-            <div v-for="b in salesByCountry" :key="b.label" class="bar-row">
-              <div class="bar-label" :title="b.label">{{ b.label }}</div>
-              <div class="bar-track">
-                <div class="bar-fill pos" :style="{ width: b.widthPct + '%' }"></div>
-              </div>
-              <div class="bar-value">{{ money(b.value) }}</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="bi-card">
-          <div class="bi-card-title">{{ T.salesByMarket }}</div>
-          <div class="bar-list">
-            <div v-for="b in salesByMarket" :key="b.label" class="bar-row">
-              <div class="bar-label" :title="b.label">{{ b.label }}</div>
-              <div class="bar-track">
-                <div class="bar-fill pos" :style="{ width: b.widthPct + '%' }"></div>
-              </div>
-              <div class="bar-value">{{ money(b.value) }}</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="bi-card">
-          <div class="bi-card-title">{{ T.topProducts }}</div>
-          <div class="bar-list">
-            <div v-for="b in topProductsBySales" :key="b.label" class="bar-row">
-              <div class="bar-label" :title="b.label">{{ b.label }}</div>
-              <div class="bar-track">
-                <div class="bar-fill pos" :style="{ width: b.widthPct + '%' }"></div>
-              </div>
-              <div class="bar-value">{{ money(b.value) }}</div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Diverging bar charts: color encodes profit vs loss -->
-        <div class="bi-card">
-          <div class="bi-card-title">{{ T.profitByCategory }}</div>
-          <div class="bar-legend">
-            <span class="legend-item"><span class="dot pos"></span> {{ T.profit }}</span>
-            <span class="legend-item"><span class="dot neg"></span> {{ T.loss }}</span>
-          </div>
-          <div class="bar-list">
-            <div v-for="b in profitByCategory" :key="b.label" class="bar-row">
-              <div class="bar-label" :title="b.label">{{ b.label }}</div>
-              <div class="bar-track">
-                <div :class="['bar-fill', b.positive ? 'pos' : 'neg']" :style="{ width: b.widthPct + '%' }"></div>
-              </div>
-              <div class="bar-value">{{ money(b.value) }}</div>
-            </div>
-          </div>
-        </div>
+        <BreakdownCard dimension="sales_by_country" :title="T.salesByCountry" kind="sequential" value-format="money" />
+        <BreakdownCard dimension="sales_by_market" :title="T.salesByMarket" kind="sequential" value-format="money" />
+        <BreakdownCard dimension="top_products_by_sales" :title="T.topProducts" kind="sequential" value-format="money" />
+        <BreakdownCard
+          dimension="profit_by_category"
+          :title="T.profitByCategory"
+          kind="diverging"
+          value-format="money"
+          :chart-types="['bar', 'pie', 'line']"
+        />
 
         <div class="bi-card">
           <div class="bi-card-title">{{ T.bestWorstProducts }}</div>

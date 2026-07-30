@@ -89,9 +89,15 @@ def populate_database():
         print("  └─ Injection Orders...")
         ord_tuples = [tuple(x) for x in orders_df.to_numpy()]
         execute_values(
-            cursor, 
-            "INSERT INTO orders (order_id, customer_id, order_date, ship_date, ship_mode, market, region, country, city, state) VALUES %s ON CONFLICT (order_id) DO NOTHING;", 
-            ord_tuples, 
+            cursor,
+            """
+            INSERT INTO orders (order_id, customer_id, order_date, ship_date, ship_mode, market, region, country, city, state)
+            VALUES %s
+            ON CONFLICT (order_id) DO UPDATE SET
+                order_date = EXCLUDED.order_date,
+                ship_date = EXCLUDED.ship_date;
+            """,
+            ord_tuples,
             page_size=2000
         )
         conn.commit()

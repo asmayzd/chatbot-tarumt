@@ -197,7 +197,7 @@ class SQLAgent:
     # ------------------------------------------------------------------
     # Prompting
     # ------------------------------------------------------------------
-    def _build_prompt(self, question: str, role: str) -> str:
+    def _build_prompt(self, question: str, role: str, history: list[dict] | None = None) -> str:
         schema = self.get_schema_description(role)
 
         if role == "user":
@@ -223,18 +223,25 @@ class SQLAgent:
                 "- Always use GROUP BY when using aggregate functions like SUM()."
             )
 
+        history_block = ""
+        if history:
+            turns = "\n".join(f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content']}" for m in history)
+            history_block = f"\nRecent conversation (for context only, do not repeat unless relevant):\n{turns}\n"
+
         return f"""
-You are an expert data analyst and database administrator.
+You are an expert data analyst and database administrator writing queries for a **PostgreSQL** database (not SQLite, not MySQL).
 
 Database schema:
 {schema}
 
 {context}
-
+{history_block}
 Rules:
 1. Write ONE single valid SQL query (SELECT or UPDATE) that answers/performs the question.
 2. Only use the tables and columns listed above. Never invent non-existent columns like 'price'.
 3. Output ONLY the raw SQL query: no explanation, no comment, no markdown.
+4. The question may refer back to the recent conversation above (e.g. "and in Germany?") — resolve it using that context.
+5. Use PostgreSQL date syntax ONLY. To extract a part of a date, use EXTRACT(YEAR FROM col) / EXTRACT(MONTH FROM col), or DATE_TRUNC('month', col), or TO_CHAR(col, 'YYYY-MM'). NEVER use SQLite functions such as strftime(), julianday(), or date('now') — they do not exist in PostgreSQL and will make the query fail.
 
 User question: "{question}"
 
@@ -315,13 +322,13 @@ SQL query:
     # ------------------------------------------------------------------
     # Execution
     # ------------------------------------------------------------------
-    def generate_sql(self, question: str, role: str = "analyst") -> str:
+    def generate_sql(self, question: str, role: str = "analyst", history: list[dict] | None = None) -> str:
         if self.client is None:
             raise ValueError("Gemini client not initialised.")
 
         response = self.client.models.generate_content(
             model=self.model,
-            contents=self._build_prompt(question, role),
+            contents=self._build_prompt(question, role, history=history),
         )
         return self._clean_sql(response.text)
 
@@ -347,7 +354,7 @@ SQL query:
             raise e
 
     def ask(self, question: str, role: str = "analyst",
-            customer_id: str = None) -> dict:
+            customer_id: str = None, history: list[dict] | None = None) -> dict:
         """Full pipeline: scope -> SQL -> security check -> execution."""
         if role == "user":
             if not customer_id:
@@ -357,7 +364,7 @@ SQL query:
                 }
             self.build_scoped_views(customer_id)
 
-        sql = self.generate_sql(question, role)
+        sql = self.generate_sql(question, role, history=history)
 
         safe, reason = self.check_sql(sql, role)
         if not safe:

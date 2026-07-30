@@ -46,6 +46,31 @@ export const api = {
     return handle(res);
   },
 
+  async biMonthlyTrends({ start, end, lang } = {}) {
+    const params = new URLSearchParams();
+    if (start) params.set("start", start);
+    if (end) params.set("end", end);
+    if (lang) params.set("lang", lang);
+    const res = await fetch(`${BASE_URL}/bi/monthly-trends?${params}`, { headers: authHeaders() });
+    return handle(res);
+  },
+
+  async biBreakdown({ dimension, start, end }) {
+    const params = new URLSearchParams({ dimension });
+    if (start) params.set("start", start);
+    if (end) params.set("end", end);
+    const res = await fetch(`${BASE_URL}/bi/breakdown?${params}`, { headers: authHeaders() });
+    return handle(res);
+  },
+
+  async biProfitByCategoryTrend({ start, end } = {}) {
+    const params = new URLSearchParams();
+    if (start) params.set("start", start);
+    if (end) params.set("end", end);
+    const res = await fetch(`${BASE_URL}/bi/profit-by-category-trend?${params}`, { headers: authHeaders() });
+    return handle(res);
+  },
+
   async ask(question, sessionId) {
     const res = await fetch(`${BASE_URL}/ask`, {
       method: "POST",

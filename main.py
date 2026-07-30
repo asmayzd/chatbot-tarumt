@@ -58,6 +58,7 @@ app.add_middleware(
 )
 
 BI_ALLOWED_ROLES = ("admin", "analyst")
+HISTORY_WINDOW = 10  # last N chat messages (~5 turns) kept as prompt context for the agents
 
 # Suggested questions per role (mirrors the Streamlit version).
 SUGGESTIONS = {
@@ -154,7 +155,13 @@ def load_components():
     df_clean = DataCleaner(df).clean()
     # Ajoute shipping_delay_days / profit_margin, utilisés par KPIAnalyzer et
     # AnomalyDetector pour les stats de livraison et de marge du tableau BI.
-    df_features = FeatureEngineer(df_clean).add_shipping_delay().add_profit_margin().get_featured_data()
+    df_features = (
+        FeatureEngineer(df_clean)
+        .add_date_features()
+        .add_shipping_delay()
+        .add_profit_margin()
+        .get_featured_data()
+    )
 
     KPI = KPIAnalyzer(df_features)
     ANOMALY = AnomalyDetector(df_features)
@@ -390,6 +397,166 @@ def bi_overview(authorization: str = Header(None)):
     }
 
 
+@app.get("/bi/breakdown")
+def bi_breakdown(
+    dimension: str,
+    start: str | None = None,
+    end: str | None = None,
+    authorization: str = Header(None),
+):
+    """Single category breakdown (sales/profit by country/market/product/category), with an optional month-range filter."""
+    token = (authorization or "").replace("Bearer ", "")
+    session = get_session(token)
+
+    if session["role"] not in BI_ALLOWED_ROLES:
+        raise HTTPException(status_code=403, detail="BI dashboard reserved for analyst / admin.")
+
+    if start and end and start > end:
+        raise HTTPException(status_code=400, detail="`start` must not be after `end`.")
+
+    if dimension == "sales_by_country":
+        series, label_key, value_key = KPI.sales_by_country(start=start, end=end).head(10), "country", "sales"
+    elif dimension == "sales_by_market":
+        series, label_key, value_key = KPI.sales_by_market(start=start, end=end), "market", "sales"
+    elif dimension == "top_products_by_sales":
+        series, label_key, value_key = KPI.top_products_by_sales(8, start=start, end=end), "product", "sales"
+    elif dimension == "profit_by_category":
+        series, label_key, value_key = KPI.profit_by_category(start=start, end=end), "category", "profit"
+    else:
+        raise HTTPException(status_code=400, detail="Unknown dimension.")
+
+    min_period, max_period = KPI.available_month_range()
+
+    return {
+        "range": {"min": min_period, "max": max_period},
+        "points": _series_to_points(series, label_key, value_key),
+    }
+
+
+@app.get("/bi/profit-by-category-trend")
+def bi_profit_by_category_trend(
+    start: str | None = None,
+    end: str | None = None,
+    authorization: str = Header(None),
+):
+    """Monthly profit per category, for a multi-line trend chart."""
+    token = (authorization or "").replace("Bearer ", "")
+    session = get_session(token)
+
+    if session["role"] not in BI_ALLOWED_ROLES:
+        raise HTTPException(status_code=403, detail="BI dashboard reserved for analyst / admin.")
+
+    if start and end and start > end:
+        raise HTTPException(status_code=400, detail="`start` must not be after `end`.")
+
+    df = KPI.profit_by_category_monthly(start=start, end=end)
+    categories = sorted(df["category"].unique().tolist()) if not df.empty else []
+
+    points = []
+    if not df.empty:
+        pivot = df.pivot_table(index=["period", "month_name"], columns="category", values="profit", fill_value=0)
+        pivot = pivot.reset_index().sort_values("period")
+        for _, row in pivot.iterrows():
+            point = {"period": row["period"], "month_name": row["month_name"]}
+            for cat in categories:
+                point[cat] = round(float(row[cat]), 2)
+            points.append(point)
+
+    min_period, max_period = KPI.available_month_range()
+
+    return {
+        "range": {"min": min_period, "max": max_period},
+        "categories": categories,
+        "points": points,
+    }
+
+
+def _build_insight_prompt(trends_df: pd.DataFrame, lang: str) -> str:
+    table = trends_df[["month_name", "year", "sales", "profit", "order_count"]].to_string(index=False)
+    target_lang = "French" if lang == "fr" else "English"
+    return f"""
+You are a business analyst. Here is monthly data (sales, profit, order count):
+{table}
+
+Write exactly 3 lines, one per metric, in {target_lang}, in this exact format (no markdown, no asterisks):
+SALES: <one sentence>
+PROFIT: <one sentence>
+ORDERS: <one sentence>
+
+Each sentence must describe the trend over the period (e.g. growth, decline, peak month, stability). Plain text only.
+""".strip()
+
+
+def _parse_insight_response(text: str, empty: dict) -> dict:
+    result = dict(empty)
+    for line in text.replace("*", "").splitlines():
+        line = line.strip()
+        if not line or ":" not in line:
+            continue
+        upper = line.upper()
+        if upper.startswith("SALES"):
+            result["sales"] = line.split(":", 1)[-1].strip()
+        elif upper.startswith("PROFIT"):
+            result["profit"] = line.split(":", 1)[-1].strip()
+        elif upper.startswith("ORDER"):
+            result["orders"] = line.split(":", 1)[-1].strip()
+    return result
+
+
+def generate_trend_insights(trends_df: pd.DataFrame, lang: str) -> dict:
+    """Best-effort one-line-per-metric interpretation. Never raises; nulls out on failure."""
+    empty = {"sales": None, "profit": None, "orders": None}
+    if trends_df.empty or len(trends_df) < 2 or RAG_AGENT is None or RAG_AGENT.client is None:
+        return empty
+    try:
+        prompt = _build_insight_prompt(trends_df, lang)
+        response = RAG_AGENT.client.models.generate_content(model="gemini-3.1-flash-lite", contents=prompt)
+        return _parse_insight_response(response.text, empty)
+    except Exception:
+        return empty
+
+
+@app.get("/bi/monthly-trends")
+def bi_monthly_trends(
+    start: str | None = None,
+    end: str | None = None,
+    lang: str = "en",
+    authorization: str = Header(None),
+):
+    """Monthly sales/profit/order-count trends + AI-generated one-line interpretations."""
+    token = (authorization or "").replace("Bearer ", "")
+    session = get_session(token)
+
+    if session["role"] not in BI_ALLOWED_ROLES:
+        raise HTTPException(status_code=403, detail="BI dashboard reserved for analyst / admin.")
+
+    if start and end and start > end:
+        raise HTTPException(status_code=400, detail="`start` must not be after `end`.")
+
+    min_period, max_period = KPI.available_month_range()
+    trends_df = KPI.monthly_trends(start=start, end=end)
+
+    points = [
+        {
+            "period": r.period,
+            "month_name": r.month_name,
+            "year": int(r.year),
+            "sales": round(float(r.sales), 2),
+            "profit": round(float(r.profit), 2),
+            "order_count": int(r.order_count),
+        }
+        for r in trends_df.itertuples()
+    ]
+
+    insights = generate_trend_insights(trends_df, lang=lang)
+
+    return {
+        "range": {"min": min_period, "max": max_period},
+        "points": points,
+        "insights": insights,
+    }
+
+
 @app.post("/ask")
 def ask(body: AskRequest, authorization: str = Header(None)):
     """Main endpoint: natural-language question -> answer (RAG or SQL)."""
@@ -412,7 +579,10 @@ def ask(body: AskRequest, authorization: str = Header(None)):
     else:
         chat_session_id = chat_history.create_session(user_id)
 
-    is_first_message = chat_history.count_messages(chat_session_id) == 0
+    history_all = chat_history.load_messages(chat_session_id)
+    is_first_message = len(history_all) == 0
+    history = history_all[-HISTORY_WINDOW:]
+
     chat_history.append_message(chat_session_id, "user", question)
     if is_first_message:
         chat_history.rename_session(chat_session_id, question[:60])
@@ -483,7 +653,7 @@ def ask(body: AskRequest, authorization: str = Header(None)):
             raise HTTPException(status_code=503, detail="RAG agent unavailable.")
 
         log_security_event(username, role, "ask_rag", "ALLOWED", f"Query: {question}")
-        rag_outcome = RAG_AGENT.query(question, role=role)
+        rag_outcome = RAG_AGENT.query(question, role=role, history=history)
 
         return respond(
             rag_outcome["answer"],
@@ -499,7 +669,7 @@ def ask(body: AskRequest, authorization: str = Header(None)):
     log_security_event(username, role, "ask_chatbot", "ALLOWED", f"Query: {question}")
 
     # For a `user`, username == customer_id, used to scope the DB views.
-    outcome = AGENT.ask(question, role=role, customer_id=username)
+    outcome = AGENT.ask(question, role=role, customer_id=username, history=history)
 
     if outcome["error"]:
         log_security_event(username, role, "sql_query", "REJECTED", f"Reason: {outcome['error']}")

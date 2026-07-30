@@ -56,7 +56,7 @@ class RAGAgent:
 
         return context_text.strip()
 
-    def query(self, question: str, role: str = "user") -> dict:
+    def query(self, question: str, role: str = "user", history: list[dict] | None = None) -> dict:
         """Génère une réponse basée sur les PDF autorisés pour ce rôle."""
         self.init_gemini()
         context = self.load_context(role=role)
@@ -66,6 +66,11 @@ class RAGAgent:
                 "answer": "Aucun document d'entreprise pertinent n'est disponible.",
                 "sources": []
             }
+
+        history_block = ""
+        if history:
+            turns = "\n".join(f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content']}" for m in history)
+            history_block = f"\n================ RECENT CONVERSATION ================\n{turns}\n=======================================================\n"
 
         prompt = f"""
 You are the official Virtual Assistant for TARUMT Store.
@@ -78,11 +83,12 @@ CRITICAL LANGUAGE & SAFETY INSTRUCTIONS:
 3. If the information is not present in the context, reply politely in the user's language (e.g., "I cannot find this information in the official documentation.").
 4. Do NOT invent or hallucinate any facts.
 5. FORMATTING: Do NOT use asterisks (*) or hash symbols (#). Return plain text only.
+6. The question may refer back to the recent conversation below (e.g. "and the deadline?") — resolve it using that context.
 
 ================ DOCUMENT CONTEXT ================
 {context}
 ==================================================
-
+{history_block}
 USER QUESTION: "{question}"
 
 YOUR RESPONSE (In the exact language of the USER QUESTION):

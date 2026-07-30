@@ -31,4 +31,10 @@ export const ICONS = {
   send: svg('<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>', 18),
   // shield-alert (cybersecurity)
   shield: svg('<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M12 8v4"/><path d="M12 16h.01"/>', 18),
+  // bar-chart-horizontal
+  barType: svg('<path d="M3 3v18h18"/><path d="M7 16h8"/><path d="M7 11h12"/><path d="M7 6h3"/>', 16),
+  // pie-chart
+  pieType: svg('<path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/>', 16),
+  // chart-line
+  lineType: svg('<path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/>', 16),
 };
