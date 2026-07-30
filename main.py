@@ -658,7 +658,7 @@ def ask(body: AskRequest, authorization: str = Header(None)):
 
     ai_verdict = None
     if not (blacklist_hit or cross_user_hit):
-        ai_verdict = ai_guardrails.classify_intent(question)
+        ai_verdict = ai_guardrails.classify_intent(question, role=role)
 
     is_malicious = blacklist_hit or cross_user_hit or bool(ai_verdict and ai_verdict["malicious"])
 
