@@ -5,6 +5,7 @@ import { ICONS } from "../components/Icons.js";
 import Mascot from "../components/Mascot.vue";
 import SecurityDashboard from "../components/SecurityDashboard.vue";
 import BiDashboard from "../components/BiDashboard.vue";
+import ChatChart from "../components/ChatChart.vue";
 import { t } from "../i18n.js";
 
 const props = defineProps({ user: Object });
@@ -149,12 +150,14 @@ async function send(question) {
 
   let fullText;
   let sql = null;
+  let chart = null;
   let blocked = false;
 
   try {
     const res = await api.ask(q, currentSessionId.value);
     fullText = res.content;
     sql = res.sql;
+    chart = res.chart || null;
     blocked = !!res.blocked;
     if (res.session_id && res.session_id !== currentSessionId.value) {
       currentSessionId.value = res.session_id;
@@ -175,7 +178,7 @@ async function send(question) {
   }
 
   // Bulle vide, puis le texte s'écrit dedans pendant que la mascotte parle.
-  messages.value.push({ role: "assistant", content: "", sql: null });
+  messages.value.push({ role: "assistant", content: "", sql: null, chart: null, chartTitle: q });
 
   // IMPORTANT : on récupère la référence réactive renvoyée par le tableau.
   // Muter l'objet brut poussé ci-dessus ne déclencherait aucun re-render.
@@ -188,8 +191,9 @@ async function send(question) {
 
   await typeOut(message, fullText);
 
-  // Le détail SQL n'apparaît qu'une fois la phrase terminée.
+  // Le détail SQL et le graphique n'apparaissent qu'une fois la phrase terminée.
   message.sql = sql;
+  message.chart = chart;
   pendingMessage = null;
   pendingFull = "";
   mascotState.value = "idle";
@@ -306,6 +310,7 @@ function money(v) {
               <summary><span class="ic" v-html="ICONS.sql"></span> {{ T.sqlUsed }}</summary>
               <pre>{{ m.sql }}</pre>
             </details>
+            <ChatChart v-if="m.chart" :chart="m.chart" :title="m.chartTitle || ''" />
           </div>
         </div>
         <div v-if="loading" class="msg assistant"><div class="bubble">…</div></div>

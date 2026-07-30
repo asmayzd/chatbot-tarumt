@@ -356,6 +356,58 @@ def _series_to_points(series: pd.Series, label_key: str, value_key: str) -> list
     ]
 
 
+CHAT_CHART_MIN_ROWS = 2
+CHAT_CHART_MAX_ROWS_LINE = 60  # a time series reads fine with many points on a line
+CHAT_CHART_MAX_ROWS_BAR = 20   # that many discrete categories would be unreadable as bars
+CHAT_CHART_MAX_SERIES = 3
+
+
+def _build_chat_chart(df: pd.DataFrame | None) -> dict | None:
+    """Best-effort: turn a SQL agent result into {type, labels, series} for a chat chart.
+
+    Only fires for a clean "one label column + 1-3 numeric columns" shape (e.g. sales
+    per month, top products by profit). Anything more ambiguous (several text columns,
+    a single row, too many rows to plot) is left as plain text/table — no chart.
+    """
+    if df is None or df.empty or len(df) < CHAT_CHART_MIN_ROWS:
+        return None
+
+    numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    label_cols = [c for c in df.columns if c not in numeric_cols]
+
+    if len(label_cols) != 1 or not numeric_cols:
+        return None
+
+    label_col = label_cols[0]
+    numeric_cols = numeric_cols[:CHAT_CHART_MAX_SERIES]
+
+    # All series share one axis (never dual-axis) — a column whose magnitude is
+    # tiny next to another (e.g. profit next to sales) would just render as a flat
+    # line, so drop it rather than plot a series nobody can read.
+    if len(numeric_cols) > 1:
+        magnitudes = {c: float(df[c].abs().max()) for c in numeric_cols}
+        largest = max(magnitudes.values()) or 1.0
+        kept = [c for c in numeric_cols if magnitudes[c] >= largest / 20]
+        numeric_cols = kept or numeric_cols[:1]
+
+    date_like = any(kw in label_col.lower() for kw in ("date", "month", "period", "year", "week"))
+    max_rows = CHAT_CHART_MAX_ROWS_LINE if date_like else CHAT_CHART_MAX_ROWS_BAR
+    if len(df) > max_rows:
+        return None
+
+    return {
+        "type": "line" if date_like else "bar",
+        "labels": [str(v) for v in df[label_col].tolist()],
+        "series": [
+            {
+                "name": str(col).replace("_", " ").strip().title(),
+                "data": [round(float(v), 2) if pd.notna(v) else 0.0 for v in df[col].tolist()],
+            }
+            for col in numeric_cols
+        ],
+    }
+
+
 @app.get("/bi/overview")
 def bi_overview(authorization: str = Header(None)):
     """Full BI dashboard: KPIs + chart-ready breakdowns. Restricted to analyst / admin."""
@@ -686,9 +738,11 @@ def ask(body: AskRequest, authorization: str = Header(None)):
         for row in records
     ]
 
+    chart = _build_chat_chart(outcome["result"])
+
     return respond(
         answer, sql=outcome["sql"], result=records,
-        extra={"cached": outcome.get("cached", False)},
+        extra={"cached": outcome.get("cached", False), "chart": chart},
     )
 
 

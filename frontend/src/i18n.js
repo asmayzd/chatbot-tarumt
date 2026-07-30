@@ -31,6 +31,8 @@ const TRANSLATIONS = {
       anomalies: "Anomalies", biRestricted: "The BI dashboard is reserved for analyst / admin roles.",
       sqlUsed: "SQL query used", inputPlaceholder: "Type your question…", send: "Send",
       welcome: "Hello! Ask me about your data.",
+      viewAsTable: "View as table", viewAsChart: "View as chart",
+      downloadPdf: "Download PDF", exporting: "Exporting…",
     },
     bi: {
       title: "BI Analytics",
@@ -84,6 +86,8 @@ const TRANSLATIONS = {
       anomalies: "Anomalies", biRestricted: "Le tableau de bord BI est réservé aux rôles analyst / admin.",
       sqlUsed: "Requête SQL utilisée", inputPlaceholder: "Posez votre question…", send: "Envoyer",
       welcome: "Bonjour ! Posez-moi vos questions sur vos données.",
+      viewAsTable: "Voir en tableau", viewAsChart: "Voir en graphique",
+      downloadPdf: "Télécharger en PDF", exporting: "Export en cours…",
     },
     bi: {
       title: "BI Analytics",
