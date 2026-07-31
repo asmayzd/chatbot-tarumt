@@ -40,6 +40,14 @@ const labels = computed(() => props.chart.labels || []);
 const series = computed(() => props.chart.series || []);
 const isLine = computed(() => props.chart.type === "line");
 
+// A forecast chart is a single historical+projected series: everything from
+// `forecastFrom` (the last actual point) onward renders as a dashed projection,
+// same hue as the actual line — it's the same metric, not a different series.
+const forecastFrom = computed(() =>
+  Number.isInteger(props.chart.forecastFrom) ? props.chart.forecastFrom : null
+);
+const isForecast = computed(() => isLine.value && forecastFrom.value !== null);
+
 const allValues = computed(() => series.value.flatMap((s) => s.data));
 const maxV = computed(() => Math.max(0, ...allValues.value, 1));
 const minV = computed(() => Math.min(0, ...allValues.value));
@@ -136,18 +144,33 @@ function toX(i) {
   return PAD_LEFT + i * xStep.value;
 }
 
+function pathFor(coords) {
+  return coords.map((c, i) => `${i === 0 ? "M" : "L"}${c.x},${c.y}`).join(" ");
+}
+
 const lineSeries = computed(() => {
   if (!isLine.value) return [];
   return series.value.map((s, j) => {
     const coords = labels.value.map((_, i) => ({ x: toX(i), y: toY(s.data[i] ?? 0) }));
+    const fFrom = forecastFrom.value;
     return {
       name: s.name,
       color: seriesColors.value[j],
       data: s.data,
       coords,
-      path: coords.map((c, i) => `${i === 0 ? "M" : "L"}${c.x},${c.y}`).join(" "),
+      path: fFrom === null ? pathFor(coords) : "",
+      solidPath: fFrom !== null ? pathFor(coords.slice(0, fFrom + 1)) : "",
+      dashedPath: fFrom !== null ? pathFor(coords.slice(fFrom)) : "",
     };
   });
+});
+
+// Faint wash over the projected region so it reads as "not actuals" even
+// before the reader notices the dashed stroke.
+const forecastWash = computed(() => {
+  if (forecastFrom.value === null) return null;
+  const x = toX(forecastFrom.value);
+  return { x, width: Math.max(0, CHART_W - PAD_RIGHT - x) };
 });
 
 function onLineHover(evt) {
@@ -160,6 +183,7 @@ function onLineHover(evt) {
     left: (toX(i) / CHART_W) * rect.width,
     top: (PAD_TOP / CHART_H) * rect.height,
     label: labels.value[i],
+    isForecast: forecastFrom.value !== null && i > forecastFrom.value,
     entries: lineSeries.value.map((s) => ({ name: s.name, color: s.color, value: s.data[i] ?? 0 })),
   };
 }
@@ -259,7 +283,17 @@ async function downloadPdf() {
       </button>
     </div>
 
-    <div v-if="series.length > 1" class="chatchart-legend">
+    <div v-if="isForecast" class="chatchart-legend">
+      <span class="cc-legend-item">
+        <span class="cc-swatch line" :style="{ background: SINGLE_COLOR }"></span>
+        {{ T.historical }}
+      </span>
+      <span class="cc-legend-item">
+        <span class="cc-swatch line dashed"></span>
+        {{ T.forecastLabel }}
+      </span>
+    </div>
+    <div v-else-if="series.length > 1" class="chatchart-legend">
       <span v-for="s in series" :key="s.name" class="cc-legend-item">
         <span
           class="cc-swatch"
@@ -281,6 +315,11 @@ async function downloadPdf() {
           v-if="hasNegative"
           :x1="PAD_LEFT" :x2="CHART_W - PAD_RIGHT" :y1="yBase" :y2="yBase"
           class="cc-baseline"
+        />
+        <rect
+          v-if="forecastWash"
+          :x="forecastWash.x" :y="PAD_TOP" :width="forecastWash.width" :height="PLOT_H"
+          class="cc-forecast-wash"
         />
 
         <!-- Bar chart -->
@@ -309,11 +348,15 @@ async function downloadPdf() {
             class="cc-crosshair"
           />
           <g v-for="s in lineSeries" :key="s.name">
-            <path :d="s.path" :stroke="s.color" class="cc-line" fill="none" />
+            <template v-if="isForecast">
+              <path :d="s.solidPath" :stroke="s.color" class="cc-line" fill="none" />
+              <path :d="s.dashedPath" :stroke="s.color" class="cc-line cc-line-dashed" fill="none" />
+            </template>
+            <path v-else :d="s.path" :stroke="s.color" class="cc-line" fill="none" />
             <circle
               v-for="(c, i) in s.coords" :key="i"
               :cx="c.x" :cy="c.y" r="2.5" :fill="s.color"
-              :class="{ 'cc-dot-active': hoveredIndex === i }"
+              :class="{ 'cc-dot-active': hoveredIndex === i, 'cc-dot-forecast': isForecast && i > forecastFrom }"
             />
           </g>
           <rect
@@ -333,7 +376,7 @@ async function downloadPdf() {
       </svg>
 
       <div v-if="tooltip" class="cc-tooltip" :style="{ left: tooltip.left + 'px', top: tooltip.top + 'px' }">
-        <strong>{{ tooltip.label }}</strong>
+        <strong>{{ tooltip.label }}<span v-if="tooltip.isForecast" class="cc-tooltip-tag"> · {{ T.forecastLabel }}</span></strong>
         <div v-for="e in tooltip.entries" :key="e.name" class="cc-tooltip-row">
           <span class="cc-key" :style="{ background: e.color }"></span>
           <span class="cc-tooltip-value">{{ formatValue(e.value) }}</span>
@@ -351,8 +394,14 @@ async function downloadPdf() {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(label, i) in labels" :key="label">
-            <td class="cc-table-label">{{ label }}</td>
+          <tr
+            v-for="(label, i) in labels" :key="label"
+            :class="{ 'cc-table-forecast': isForecast && i > forecastFrom }"
+          >
+            <td class="cc-table-label">
+              {{ label }}
+              <span v-if="isForecast && i > forecastFrom" class="cc-table-tag">({{ T.forecastLabel }})</span>
+            </td>
             <td v-for="s in series" :key="s.name" class="cc-table-value">{{ formatValue(s.data[i]) }}</td>
           </tr>
         </tbody>
@@ -386,6 +435,9 @@ async function downloadPdf() {
 .cc-legend-item { display: flex; align-items: center; gap: 6px; font-size: 0.76rem; color: #52514e; }
 .cc-swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; flex-shrink: 0; }
 .cc-swatch.line { width: 12px; height: 2px; border-radius: 1px; }
+.cc-swatch.line.dashed {
+  background: repeating-linear-gradient(to right, #2a78d6 0, #2a78d6 3px, transparent 3px, transparent 6px);
+}
 
 .chatchart-svg-wrap { position: relative; }
 .chatchart-svg { width: 100%; height: 180px; overflow: visible; display: block; }
@@ -394,9 +446,12 @@ async function downloadPdf() {
 .cc-baseline { stroke: #c3c2b7; stroke-width: 1; }
 .cc-axis-label { font-size: 8px; fill: #898781; }
 .cc-hover-wash { fill: rgba(11, 11, 11, 0.045); }
+.cc-forecast-wash { fill: rgba(11, 11, 11, 0.03); }
 .cc-hit { fill: transparent; cursor: pointer; }
 .cc-line { stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.cc-line-dashed { stroke-dasharray: 5 4; opacity: 0.85; }
 .cc-dot-active { r: 4.5; }
+.cc-dot-forecast { fill-opacity: 0.55; }
 .cc-crosshair { stroke: #c3c2b7; stroke-width: 1; stroke-dasharray: 3 3; }
 
 .cc-tooltip {
@@ -405,6 +460,7 @@ async function downloadPdf() {
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.22); z-index: 5;
 }
 .cc-tooltip strong { display: block; margin-bottom: 3px; font-size: 0.74rem; opacity: 0.85; }
+.cc-tooltip-tag { font-weight: 600; opacity: 0.9; }
 .cc-tooltip-row { display: flex; align-items: center; gap: 6px; }
 .cc-key { width: 10px; height: 2px; background: #fff; display: inline-block; flex-shrink: 0; }
 .cc-tooltip-value { font-weight: 700; }
@@ -417,6 +473,8 @@ async function downloadPdf() {
 .chatchart-table th { color: #52514e; font-weight: 600; }
 .cc-table-label { color: #0b0b0b; }
 .cc-table-value { font-variant-numeric: tabular-nums; color: #0b0b0b; }
+.cc-table-forecast td { color: #52514e; }
+.cc-table-tag { font-size: 0.72rem; color: #898781; margin-left: 4px; }
 
 @media (prefers-reduced-motion: reduce) {
   .cc-btn { transition: none; }

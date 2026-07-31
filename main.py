@@ -12,6 +12,7 @@ Interactive docs once running:
 """
 
 import os
+import re
 import uuid
 import configparser
 import pandas as pd
@@ -40,6 +41,7 @@ from src.data_science.feature_engineer import FeatureEngineer
 from src.bi_analytics.kpi_analyzer import KPIAnalyzer
 from src.bi_analytics.anomaly_detector import AnomalyDetector
 from src.bi_analytics.sql_agent import SQLAgent
+from src.bi_analytics.forecaster import Forecaster
 from src.data_science.rag_agent import RAGAgent
 
 
@@ -119,12 +121,13 @@ KPI = None
 ANOMALY = None
 AGENT = None
 RAG_AGENT = None
+FORECASTER = None
 
 
 @app.on_event("startup")
 def load_components():
     """Load data and models once when the server starts directly from PostgreSQL."""
-    global KPI, ANOMALY, AGENT, RAG_AGENT
+    global KPI, ANOMALY, AGENT, RAG_AGENT, FORECASTER
 
     init_db()
 
@@ -165,6 +168,7 @@ def load_components():
 
     KPI = KPIAnalyzer(df_features)
     ANOMALY = AnomalyDetector(df_features)
+    FORECASTER = Forecaster(KPI)
 
     # --- Configuration du SQLAgent ---
     if "GEMINI_API_KEY" in os.environ:
@@ -405,6 +409,88 @@ def _build_chat_chart(df: pd.DataFrame | None) -> dict | None:
             }
             for col in numeric_cols
         ],
+    }
+
+
+# ==========================================================================
+#  Forecasting: "predict/forecast ..." questions, routed straight to the
+#  Holt-Winters model instead of the SQL agent (analyst / admin only).
+# ==========================================================================
+FORECAST_KEYWORDS = [
+    "predict", "prediction", "forecast", "projection", "projected",
+    "next month", "next quarter", "next year", "upcoming", "coming months",
+    "future sales", "future profit", "future trend",
+    "prévoir", "prévision", "prévisions", "prédire", "prédiction",
+    "tendance future", "à venir", "futur",
+]
+
+FORECAST_METRIC_LABELS = {"sales": "Sales", "profit": "Profit", "order_count": "Order Count"}
+
+
+def _detect_forecast_metric(question: str) -> str:
+    q = question.lower()
+    if "profit" in q or "marge" in q:
+        return "profit"
+    if "order" in q or "commande" in q:
+        return "order_count"
+    return "sales"
+
+
+def _parse_forecast_horizon(question: str) -> int:
+    q = question.lower()
+    # allow adjectives between the number and the unit ("6 prochains mois", "next 6 months")
+    match = re.search(r"(\d+)\D{0,15}(month|mois)", q)
+    if match:
+        return max(1, min(24, int(match.group(1))))
+    if "quarter" in q or "trimestre" in q:
+        return 3
+    if "year" in q or "année" in q or "annee" in q:
+        return 12
+    return 3
+
+
+def _build_forecast_prompt(question: str, metric: str, result: dict) -> str:
+    hist_tail = list(zip(result["historical_labels"][-6:], result["historical_values"][-6:]))
+    forecast_pairs = list(zip(result["forecast_labels"], result["forecast_values"]))
+    return f"""
+The user asked: "{question}"
+
+Recent monthly {metric} history: {hist_tail}
+Forecast for the next {len(forecast_pairs)} months (Holt-Winters exponential smoothing): {forecast_pairs}
+
+Write a short, direct 2-3 sentence answer based on this forecast, describing the
+expected trend (growth, decline, stability, seasonality if relevant) and mentioning
+the forecasted values.
+Detect the language of the user question and reply in that same language.
+Plain text only: no markdown, no asterisks.
+""".strip()
+
+
+def generate_forecast_answer(question: str, metric: str, result: dict) -> str:
+    """Best-effort natural-language summary of the forecast; falls back to a plain list."""
+    forecast_pairs = list(zip(result["forecast_labels"], result["forecast_values"]))
+    fallback = "Forecast (" + metric + "): " + ", ".join(f"{lbl}: {val:,.0f}" for lbl, val in forecast_pairs)
+
+    if RAG_AGENT is None or RAG_AGENT.client is None:
+        return fallback
+    try:
+        prompt = _build_forecast_prompt(question, metric, result)
+        response = RAG_AGENT.client.models.generate_content(model="gemini-3.1-flash-lite", contents=prompt)
+        return response.text.replace("*", "").strip()
+    except Exception:
+        return fallback
+
+
+def _build_forecast_chart(metric: str, result: dict) -> dict:
+    """A single line series covering history + forecast; the frontend renders
+    everything from `forecastFrom` onward as a dashed projection."""
+    labels = result["historical_labels"] + result["forecast_labels"]
+    data = result["historical_values"] + result["forecast_values"]
+    return {
+        "type": "line",
+        "labels": labels,
+        "series": [{"name": FORECAST_METRIC_LABELS[metric], "data": data}],
+        "forecastFrom": len(result["historical_labels"]) - 1,
     }
 
 
@@ -686,6 +772,27 @@ def ask(body: AskRequest, authorization: str = Header(None)):
             f"Security alert: request rejected. (Warning {session['violations']}/3)",
             blocked=True,
         )
+
+    # --- FORECASTING : "predict/forecast ..." goes straight to the time-series
+    # model instead of the SQL agent. Reserved for analyst/admin, same as the
+    # rest of the BI surface — a `user` question falls through to RAG/SQL below.
+    is_forecast_query = role in BI_ALLOWED_ROLES and any(kw in question.lower() for kw in FORECAST_KEYWORDS)
+
+    if is_forecast_query:
+        if FORECASTER is None:
+            raise HTTPException(status_code=503, detail="Forecasting unavailable.")
+
+        metric = _detect_forecast_metric(question)
+        periods = _parse_forecast_horizon(question)
+        log_security_event(username, role, "ask_forecast", "ALLOWED", f"Query: {question} (metric={metric}, periods={periods})")
+
+        result = FORECASTER.forecast(metric, periods=periods)
+        if result is None:
+            return respond("Not enough historical data to build a forecast for this metric yet.")
+
+        answer = generate_forecast_answer(question, metric, result)
+        chart = _build_forecast_chart(metric, result)
+        return respond(answer, sql=None, result=None, extra={"chart": chart, "cached": False})
 
     # --- ROUTAGE AUTOMATIQUE : RAG (Docs PDF) vs SQL Agent ---
     rag_keywords = [

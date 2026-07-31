@@ -33,6 +33,7 @@ const TRANSLATIONS = {
       welcome: "Hello! Ask me about your data.",
       viewAsTable: "View as table", viewAsChart: "View as chart",
       downloadPdf: "Download PDF", exporting: "Exporting…",
+      historical: "Historical", forecastLabel: "Forecast",
     },
     bi: {
       title: "BI Analytics",
@@ -88,6 +89,7 @@ const TRANSLATIONS = {
       welcome: "Bonjour ! Posez-moi vos questions sur vos données.",
       viewAsTable: "Voir en tableau", viewAsChart: "Voir en graphique",
       downloadPdf: "Télécharger en PDF", exporting: "Export en cours…",
+      historical: "Historique", forecastLabel: "Prévision",
     },
     bi: {
       title: "BI Analytics",
